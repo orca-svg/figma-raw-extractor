@@ -1,128 +1,160 @@
-# Figma Raw Data Extractor
+# Notion MCP Trace
 
-Figma URL을 입력하면 Figma MCP 서버의 모든 툴을 호출해 **원본 응답을 가공 없이** 덤프하는 React 앱.
+Notion 페이지·데이터베이스를 실제 Notion MCP로 읽고, 각 호출의 입력·응답·추출 결과를 단계별로 확인하는 React 기반 로컬 검사 도구입니다.
 
-두 개의 데이터 소스를 UI에서 전환할 수 있다.
+사용자는 Notion OAuth 또는 개인 토큰으로 워크스페이스를 연결하고, 조회할 Notion URL이나 ID를 입력할 수 있습니다. 애플리케이션은 검색, 대상 조회, 데이터 소스 스키마, 데이터베이스 행, 페이지 본문, 댓글을 순서대로 읽으며 원시 MCP 응답도 함께 보여줍니다.
 
-| 소스 | 인증 | 원격 | 비고 |
-|---|---|---|---|
-| **REST API** (기본) | Personal Access Token | ✅ | 문서 JSON 원본. 데스크톱 앱 불필요 |
-| **MCP** | 없음(로컬) / OAuth(원격) | ❌ | Figma 데스크톱 로컬 서버만 실질 사용 가능 |
+> 이 프로젝트의 실제 추출 경로는 읽기 전용입니다. MCP 도구 안내 화면에는 지원 범위를 설명하기 위해 쓰기 도구도 표시하지만 호출하지 않습니다.
 
-### 원격 MCP를 쓸 수 없는 이유
+## 주요 화면
 
-`https://mcp.figma.com/mcp` 는 OAuth Dynamic Client Registration 시 **`client_name`을 화이트리스트로 검사**한다. 승인된 클라이언트(Claude Code, Cursor 등) 외에는 등록 엔드포인트가 무조건 403을 반환한다.
+- **추출 검사 (`/`)**: Notion 계정 연결, 대상 입력, MCP 호출 타임라인, 요청·응답·추출 정보 확인
+- **MCP 도구 안내 (`/tools`)**: Notion MCP 도구 28개를 읽기·쓰기·관리 범주로 소개하고 연결된 워크스페이스의 실제 가용 상태 표시
+- **26행 예제 모드**: Notion 연결 없이 합성 샘플 데이터를 실제 MCP 응답 형태로 재생
 
-```
-POST https://api.figma.com/v1/oauth/mcp/register  →  403 Forbidden
-```
+## 요구 사항
 
-> "Only clients listed in the Figma MCP Catalog can connect to the Figma MCP Server."
+- Node.js `22.x` 권장 (`20.19.0` 이상 지원)
+- npm `10.x` 이상 권장
+- 실제 조회 시 접근 가능한 Notion 계정 및 워크스페이스
 
-OAuth 구현체(`server/oauth.mjs`)는 표준 스펙대로 완성되어 있어 Figma가 등록을 개방하거나 사전 등록된 `client_id`가 생기면 그대로 동작한다. 그때까지 원격은 REST API를 쓴다.
-
-## 구조
-
-브라우저는 MCP 서버에 직접 붙을 수 없다(CORS + MCP 세션 핸드셰이크). 그래서 얇은 Node 프록시를 둔다.
-
-```
-브라우저 (React/Vite :5173)
-   │  POST /api/extract  { url, endpoint }
-   ▼
-Express 프록시 (:5174)          server/index.mjs
-   │  @modelcontextprotocol/sdk — Streamable HTTP (실패 시 SSE 폴백)
-   ▼
-Figma MCP 서버 (기본 http://127.0.0.1:3845/mcp)
-```
-
-- `server/figma-url.mjs` — Figma URL → `fileKey` / `nodeId` / 파일 종류 파싱 (branch URL, `/board/`, `/slides/`, `/make/` 포함)
-- `server/mcp.mjs` — MCP 접속 및 파일 종류에 따른 툴 호출 계획 수립
-- `server/index.mjs` — HTTP API
-- `src/App.tsx` — 입력 UI + 툴별 결과 패널 (text / raw JSON 탭, 복사, 전체 다운로드)
-
-## 사전 준비 (REST API — 기본 경로)
-
-1. Figma → **Settings → Security → Personal access tokens → Generate new token**
-2. 스코프는 **File content: Read-only** 면 충분 (변수까지 받으려면 Variables: Read-only 추가, Enterprise 플랜 전용)
-3. 앱 실행 후 토큰 입력창에 붙여넣기
-
-토큰은 검증 후 `.figma-token.json`(`chmod 600`, gitignore 대상)에 저장되고 브라우저로 다시 내려가지 않는다. `FIGMA_TOKEN` 환경변수를 쓰면 파일 저장을 건너뛴다.
-
-### 호출하는 REST 엔드포인트
-
-| 엔드포인트 | 조건 | 내용 |
-|---|---|---|
-| `GET /v1/files/:key/nodes?ids=…&geometry=paths` | node-id 있음 | 해당 서브트리 전체 JSON (벡터 좌표 포함) |
-| `GET /v1/files/:key?geometry=paths` | node-id 없음 | 문서 전체 JSON |
-| `GET /v1/images/:key?ids=…&format=png&scale=2` | node-id 있음 | 렌더 PNG URL |
-| `GET /v1/files/:key/components` | 항상 | 컴포넌트 목록 |
-| `GET /v1/files/:key/styles` | 항상 | 스타일 목록 |
-| `GET /v1/files/:key/variables/local` | 항상(선택) | 로컬 변수. **Enterprise 전용** — 그 외 플랜은 403이 정상 |
-
-## 사전 준비: 로컬 MCP 서버 켜기
-
-기본 엔드포인트는 Figma 데스크톱 앱의 로컬 MCP 서버다. **인증이 필요 없는 대신 앱이 실행 중이어야 한다.**
-
-1. Figma 데스크톱 앱 실행
-2. 메뉴 → Preferences → **Enable local MCP server** 체크
-3. `http://127.0.0.1:3845/mcp` 가 열렸는지 확인
-
-UI의 "MCP 엔드포인트 설정"에서 다른 주소로 바꿀 수 있지만, 원격 서버(`https://mcp.figma.com/mcp`)는 OAuth가 필요해 이 프록시로는 아직 붙지 않는다.
-
-## 실행
+Node 버전 관리 도구를 사용한다면 저장소의 `.nvmrc`를 기준으로 맞출 수 있습니다.
 
 ```bash
-npm install
-npm run dev     # 프록시(:5174) + Vite(:5173) 동시 기동
+nvm use
 ```
 
-`http://localhost:5173` 접속 → Figma URL 붙여넣기 → 추출.
+## 로컬 실행
 
-## 입력 URL
-
-node-id가 있으면 전 툴이 돌고, 없으면 파일 최상위 페이지 목록만 나온다. Figma에서 레이어 우클릭 → **Copy link to selection** 을 쓰는 게 좋다.
-
+```bash
+git clone https://github.com/orca-svg/figma-raw-extractor.git
+cd figma-raw-extractor
+npm ci
+npm run dev
 ```
-https://www.figma.com/design/<fileKey>/<name>?node-id=1-2
-```
 
-## 호출하는 툴
+실행 후 다음 주소를 엽니다.
 
-| 툴 | 조건 | 내용 |
-|---|---|---|
-| `get_metadata` | design 파일 | 노드 트리(id/type/name/위치/크기) XML. nodeId 없으면 페이지 목록 |
-| `get_design_context` | nodeId 있음 (make는 `0:1` 고정) | 레이아웃·스타일·토큰이 반영된 참조 코드 + 에셋 URL |
-| `get_variable_defs` | design + nodeId | 노드에 적용된 Figma 변수 정의 |
-| `get_screenshot` | make 아님 + nodeId | 렌더 PNG의 단기 URL |
+- React: http://127.0.0.1:5173
+- MCP 도구 안내: http://127.0.0.1:5173/tools
+- API 상태: http://127.0.0.1:8787/api/health
 
-조건에 안 맞아 건너뛴 툴은 UI 상단 "건너뛴 툴"에 이유와 함께 표시된다 — 조용히 누락되지 않는다.
+`npm run dev`는 Vite 개발 서버와 Express API를 함께 실행합니다.
 
-## 추가 API
+## Notion 연결
 
-| 엔드포인트 | 용도 |
-|---|---|
-| `GET  /api/health` | 프록시 상태와 기본 엔드포인트 |
-| `GET  /api/token/status` | PAT 보유/유효 여부 |
-| `POST /api/token` | PAT 검증 후 저장 — `{ token }` |
-| `POST /api/token/reset` | PAT 삭제 |
-| `GET  /api/auth/status` | 원격 MCP OAuth 인증 상태 |
-| `POST /api/auth/reset` | 저장된 OAuth 토큰/클라이언트 등록 정보 삭제 |
-| `GET  /oauth/callback` | OAuth 콜백 (Figma가 브라우저를 되돌려보내는 곳) |
-| `POST /api/tools` | 연결된 MCP 서버의 툴 목록 + 입력 스키마 원본 |
-| `POST /api/call` | 임의 툴 직접 호출 — `{ name, args }` |
+### OAuth 연결
 
-`POST /api/extract` 는 `{ url, source: 'rest' | 'mcp', endpoint? }` 를 받는다.
+1. 추출 검사 화면에서 확인할 Notion 계정 이메일을 입력합니다.
+2. **Notion에서 계정 연결**을 누릅니다.
+3. OAuth 승인 화면에서 대상 페이지가 속한 워크스페이스를 선택합니다.
+4. 연결 카드에 표시된 이메일과 워크스페이스가 대상 페이지의 소속과 같은지 확인합니다.
+
+같은 이메일로 여러 Notion 워크스페이스에 참여할 수 있습니다. 사용자에게 페이지 권한이 있더라도 MCP가 다른 워크스페이스로 승인되면 `object_not_found`가 발생합니다.
+
+### Personal access token
+
+개발·검증 목적으로 화면의 **개인 토큰으로 연결** 영역을 사용할 수 있습니다. 토큰은 브라우저 저장소나 파일에 기록하지 않고 API 서버 메모리에만 보관합니다.
+
+서버가 다시 시작되면 OAuth 및 개인 토큰 세션이 초기화되므로 다시 연결해야 합니다.
 
 ## 환경 변수
 
-- `FIGMA_TOKEN` — Personal Access Token. 설정 시 파일 저장을 건너뛴다
-- `FIGMA_MCP_URL` — 기본 MCP 엔드포인트 (기본값 `https://mcp.figma.com/mcp`)
-- `PROXY_ORIGIN` — OAuth 콜백 URL의 origin (기본값 `http://127.0.0.1:5174`)
-- `PORT` — 프록시 포트 (기본값 `5174`)
+기본 포트를 사용할 때는 별도 설정이 필요하지 않습니다. 실행 환경을 변경해야 한다면 `.env.example`의 값을 참고하여 셸 환경 변수로 전달합니다.
 
-## 저장 파일
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `PORT` | `8787` | Express API 포트 |
+| `API_ORIGIN` | `http://127.0.0.1:8787` | OAuth 콜백 및 API 기준 주소 |
+| `APP_ORIGIN` | 개발 `http://127.0.0.1:5173` | OAuth 완료 후 돌아올 React 주소 |
 
-| 파일 | 내용 | 권한 |
-|---|---|---|
-| `.figma-token.json` | Personal Access Token | 600, gitignore |
-| `.figma-mcp-auth.json` | OAuth 토큰 / 클라이언트 등록 정보 / PKCE verifier | 600, gitignore |
+예시:
+
+```bash
+PORT=8787 \
+API_ORIGIN=http://127.0.0.1:8787 \
+APP_ORIGIN=http://127.0.0.1:5173 \
+npm run dev
+```
+
+`.env`, OAuth 토큰, Notion 개인 토큰은 저장소에 커밋하지 마세요.
+
+## 구현된 MCP 읽기 흐름
+
+1. `tools/list`: 현재 연결에서 사용할 수 있는 MCP 도구 확인
+2. `fetch({ id: "self" })`: 사용자, 워크스페이스, 플랜별 도구 가용 상태 확인
+3. `search`: 워크스페이스 의미 검색
+4. `fetch(target)`: 대상 페이지·데이터베이스 본문과 데이터 소스·뷰 정보 조회
+5. `fetch(collection://...)`: 데이터 소스 속성 스키마 조회
+6. `query_data_sources`: 활성·보관 행 및 페이지네이션 조회
+7. `query_database_view`: 데이터베이스 뷰 호환 조회
+8. `query_data_sources` SQL 모드: 전체 속성 조회
+9. 행별 `fetch`: 각 행의 페이지 본문과 생략된 블록 조회
+10. `get_comments`: 페이지·블록 댓글과 해결된 토론 조회
+
+Notion MCP가 첨부파일 본문 다운로드를 제공하지 않는 경우에는 `fetch` 응답에 포함된 첨부 URL과 메타데이터까지만 기록합니다.
+
+## 프로젝트 구조
+
+```text
+src/                  React UI
+  components/         연결, 대상 입력, 타임라인, 응답 검사, 도구 안내
+server/               Express API, OAuth, MCP 클라이언트, 추출 파이프라인
+tests/                MCP 응답 파서와 추출 흐름 테스트
+notion_sample_rows_26.csv
+                      연결 없이 사용하는 예제 데이터
+```
+
+## 사용 가능한 명령
+
+```bash
+npm run dev          # React와 API 개발 서버 동시 실행
+npm run dev:web      # React만 실행
+npm run dev:server   # API만 실행
+npm test             # Vitest 테스트 1회 실행
+npm run test:watch   # 테스트 감시 모드
+npm run typecheck    # TypeScript 검사
+npm run build        # 프로덕션 번들 생성
+npm start            # 빌드된 화면과 API를 8787 포트에서 실행
+```
+
+프로덕션 모드 확인:
+
+```bash
+npm run build
+npm start
+```
+
+이 경우 React 정적 파일과 API가 모두 http://127.0.0.1:8787 에서 제공됩니다.
+
+## 변경 전 확인
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+## 문제 해결
+
+### `object_not_found` 또는 404
+
+- 연결 카드의 워크스페이스가 대상 페이지의 워크스페이스와 같은지 확인합니다.
+- 브라우저에서 연결된 계정으로 대상 링크가 실제로 열리는지 확인합니다.
+- 링크드 데이터베이스라면 표시된 뷰뿐 아니라 원본 데이터베이스에도 접근 권한이 있어야 합니다.
+- **연결 해제** 후 올바른 워크스페이스를 선택하여 OAuth를 다시 승인합니다.
+
+### 5173 또는 8787 포트 충돌
+
+기존 개발 서버를 종료하거나 환경 변수와 `vite.config.ts`의 개발 포트를 함께 변경합니다.
+
+### MCP 도구가 제한적으로 표시됨
+
+Notion 플랜이나 워크스페이스 설정에 따라 `query_data_sources`, 회의 노트 등의 도구가 제한되거나 업그레이드를 요구할 수 있습니다. 도구 안내 화면의 상태는 `fetch({ id: "self" })`가 반환한 현재 연결 기준입니다.
+
+## 보안 원칙
+
+- OAuth/PAT 토큰은 서버 메모리에만 저장합니다.
+- `.env`와 인증 정보는 Git에서 제외합니다.
+- 실제 추출 실행에서는 쓰기 도구를 호출하지 않습니다.
+- 원시 응답에는 페이지 내용이나 사용자 정보가 포함될 수 있으므로 외부 공유 전에 확인하세요.

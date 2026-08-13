@@ -1,46 +1,42 @@
-export type ToolStatus = 'ok' | 'tool_error' | 'failed' | 'unavailable'
+export type StepState = "running" | "success" | "warning" | "error" | "skipped";
 
-export interface ToolResult {
-  tool: string
-  args: Record<string, unknown>
-  status: ToolStatus
-  durationMs?: number
-  text?: string
-  raw?: unknown
-  error?: string
-}
+export type ExtractionEvent = {
+  type: "step" | "complete" | "fatal";
+  id: string;
+  order: number;
+  group: "connection" | "discovery" | "search" | "target" | "schema" | "view" | "sql" | "page" | "comments" | "summary";
+  label: string;
+  state: StepState;
+  tool?: string;
+  startedAt: string;
+  elapsedMs?: number;
+  request?: unknown;
+  response?: unknown;
+  extracted?: unknown;
+  message?: string;
+};
 
-export interface ExtractTarget {
-  kind: 'design' | 'board' | 'slides' | 'make'
-  fileKey: string
-  nodeId: string | null
-  rawNodeId: string | null
-  href: string
-}
+export type Identity = {
+  workspace?: { id?: string; name?: string };
+  user?: { id?: string; name?: string; email?: string; type?: string };
+  current_tool_access?: Record<string, { status?: string; upgrade_url?: string }>;
+};
 
-export type Source = 'rest' | 'mcp'
+export type ConnectionStatus = {
+  connected: boolean;
+  authKind?: "oauth" | "pat";
+  identity?: Identity;
+  expectedEmail?: string;
+  message?: string;
+};
 
-export interface TokenStatus {
-  present: boolean
-  valid?: boolean
-  email?: string
-  handle?: string
-  error?: string
-}
-
-export interface AuthStatus {
-  endpoint: string
-  required: boolean
-  authenticated: boolean
-  redirectUrl: string
-}
-
-export interface ExtractResponse {
-  target: ExtractTarget
-  source: Source
-  endpoint: string
-  toolsAvailable: string[]
-  skipped: { tool: string; reason: string }[]
-  results: ToolResult[]
-  totalMs: number
-}
+export type ExtractionOptions = {
+  target: string;
+  expectedEmail?: string;
+  searchQuery?: string;
+  maxRows: number;
+  includeArchived: boolean;
+  includeComments: boolean;
+  includeTranscript: boolean;
+  mode: "live" | "demo";
+};
