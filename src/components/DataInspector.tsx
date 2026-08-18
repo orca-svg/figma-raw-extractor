@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ExtractionEvent } from "../types";
+import { figmaPreviewUrls } from "../lib/figma-preview-urls";
 
 type Tab = "response" | "request" | "extracted" | "visual";
 
@@ -14,7 +15,8 @@ function JsonBlock({ value }: { value: unknown }) {
   const text = useMemo(() => {
     if (typeof value === "string") return value;
     try {
-      return JSON.stringify(value, null, 2);
+      const serialized = JSON.stringify(value, null, 2);
+      return typeof serialized === "string" ? serialized : "";
     } catch {
       return String(value);
     }
@@ -31,25 +33,6 @@ function JsonBlock({ value }: { value: unknown }) {
       <pre>{text || "표시할 값이 없습니다."}</pre>
     </div>
   );
-}
-
-function figmaPreviewUrls(value: unknown): string[] {
-  let corpus = "";
-  try { corpus = JSON.stringify(value); } catch { return []; }
-  const matches = corpus.match(/https:\/\/[^\s"'<>\\]+/g) ?? [];
-  const urls: string[] = [];
-  for (const raw of matches) {
-    try {
-      const normalized = raw.replace(/\\n.*$/, "").replace(/[),.;\\]+$/, "");
-      const url = new URL(normalized);
-      if (url.protocol !== "https:" || !(url.hostname === "figma.com" || url.hostname.endsWith(".figma.com"))) continue;
-      if (!/\/api\/mcp\/asset\//.test(url.pathname) || !/\.(?:png|jpe?g|webp|gif|svg)$/i.test(url.pathname)) continue;
-      if (!urls.includes(url.href)) urls.push(url.href);
-    } catch {
-      // Ignore malformed URLs embedded in arbitrary Tool text.
-    }
-  }
-  return urls.slice(0, 20);
 }
 
 function VisualArtifacts({ event }: { event: ExtractionEvent }) {

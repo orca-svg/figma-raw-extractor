@@ -1,0 +1,12 @@
+{
+  "name": "mcp-trace-studio-figma-oauth-broker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20.19.0" },
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.0"
+  }
+}

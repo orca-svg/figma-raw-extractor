@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 14px; color: var(--figma-color-text); background: var(--figma-color-bg); font: 12px/1.45 Inter, system-ui, sans-serif; }
+    main { display: grid; gap: 12px; }
+    .brand { display: flex; gap: 9px; align-items: center; min-width: 0; }
+    .mark { width: 30px; height: 30px; flex: 0 0 30px; border-radius: 9px; display: grid; place-items: center; color: white; background: #6f52d9; font-weight: 800; }
+    h1 { margin: 0; font-size: 14px; } p { margin: 2px 0 0; color: var(--figma-color-text-secondary); }
+    .card { padding: 12px; border: 1px solid var(--figma-color-border); border-radius: 11px; background: var(--figma-color-bg-secondary); }
+    label { display: grid; gap: 7px; font-weight: 650; }
+    input { width: 100%; height: 42px; padding: 0 12px; border: 1px solid var(--figma-color-border); border-radius: 9px; color: var(--figma-color-text); background: var(--figma-color-bg); font: 700 18px/1 ui-monospace, monospace; letter-spacing: .2em; text-align: center; }
+    button { width: 100%; height: 36px; margin-top: 9px; border: 0; border-radius: 9px; color: white; background: #6f52d9; font: 700 12px Inter, sans-serif; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+    .status { display: flex; gap: 9px; align-items: flex-start; }
+    .dot { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: #999; }
+    .status.ready .dot { background: #22a06b; box-shadow: 0 0 0 4px color-mix(in srgb, #22a06b 16%, transparent); }
+    .status.busy .dot { background: #8065df; animation: pulse 1s infinite alternate; }
+    .status.error .dot { background: #e5484d; }
+    .meta { margin-top: 9px; padding-top: 8px; overflow: hidden; border-top: 1px solid var(--figma-color-border); color: var(--figma-color-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+    body.connected { padding: 12px; }
+    body.connected main { gap: 10px; }
+    body.connected .brand-copy { display: none; }
+    body.connected .card { padding: 10px 11px; }
+    body.connected .status p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    code { font: 11px ui-monospace, monospace; }
+    @keyframes pulse { to { opacity: .35; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="brand"><span class="mark">MT</span><div><h1>MCP Trace Studio Bridge</h1><p class="brand-copy">열어 둔 채 Trace Studio에서 추출하세요.</p></div></div>
+  <section class="card" id="pairing">
+    <label>Trace Studio 페어링 코드<input id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" /></label>
+    <button id="connect" disabled>로컬 Trace Studio 연결</button>
+  </section>
+  <section class="card">
+    <div class="status" id="status"><span class="dot"></span><div><strong id="status-title">플러그인 준비 중</strong><p id="status-copy">현재 파일 정보를 확인하고 있습니다.</p></div></div>
+    <div class="meta" id="meta"></div>
+  </section>
+</main>
+<script>
+  const API = "http://localhost:8787";
+  const code = document.querySelector("#code");
+  const connect = document.querySelector("#connect");
+  const pairing = document.querySelector("#pairing");
+  const status = document.querySelector("#status");
+  const title = document.querySelector("#status-title");
+  const copy = document.querySelector("#status-copy");
+  const metaBox = document.querySelector("#meta");
+  let meta;
+  let token;
+  let polling = false;
+
+  function setStatus(kind, heading, detail) {
+    status.className = `status ${kind || ""}`;
+    title.textContent = heading;
+    copy.textContent = detail;
+  }
+
+  function renderMeta(value) {
+    metaBox.textContent = `${value.editorType} · ${value.pageName || "페이지 없음"} · ${value.user?.name || "사용자 없음"}`;
+  }
+
+  code.addEventListener("input", () => {
+    code.value = code.value.replace(/\D/g, "").slice(0, 6);
+    connect.disabled = code.value.length !== 6 || !meta;
+  });
+
+  connect.addEventListener("click", async () => {
+    connect.disabled = true;
+    setStatus("busy", "페어링 중", "Trace Studio의 6자리 코드를 확인하고 있습니다.");
+    try {
+      const response = await fetch(`${API}/api/figma/plugin/pair/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code.value, meta }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || `연결 실패 (${response.status})`);
+      token = payload.sessionToken;
+      pairing.hidden = true;
+      document.body.classList.add("connected");
+      parent.postMessage({ pluginMessage: { type: "compact-ui" } }, "*");
+      setStatus("ready", "Trace Studio 연결됨", "추출 요청을 기다리고 있습니다. 플러그인을 닫지 마세요.");
+      void poll();
+    } catch (error) {
+      setStatus("error", "페어링 실패", error.message || String(error));
+      connect.disabled = false;
+    }
+  });
+
+  async function poll() {
+    if (polling || !token) return;
+    polling = true;
+    while (token) {
+      try {
+        const response = await fetch(`${API}/api/figma/plugin/jobs/next`, { headers: { Authorization: `Bearer ${token}` } });
+        if (response.status === 204) continue;
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || `대기 실패 (${response.status})`);
+        if (payload.job) {
+          setStatus("busy", "노드 추출 중", `${payload.job.target.nodeId}의 구조와 이미지를 읽고 있습니다.`);
+          parent.postMessage({ pluginMessage: { type: "job", job: payload.job } }, "*");
+          return;
+        }
+      } catch (error) {
+        setStatus("error", "연결 재시도 중", error.message || String(error));
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+    polling = false;
+  }
+
+  async function sendResult(message) {
+    try {
+      await Promise.all(message.payloads.map(async (artifact) => {
+        const response = await fetch(`${API}/api/figma/plugin/jobs/${encodeURIComponent(message.jobId)}/artifacts/${encodeURIComponent(artifact.slot)}`, {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": artifact.mimeType },
+          body: artifact.data,
+        });
+        if (!response.ok) throw new Error((await response.json()).message || `artifact 업로드 실패 (${response.status})`);
+      }));
+      const response = await fetch(`${API}/api/figma/plugin/jobs/${encodeURIComponent(message.jobId)}/result`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ result: message.result }),
+      });
+      if (!response.ok) throw new Error((await response.json()).message || `결과 전송 실패 (${response.status})`);
+      setStatus("ready", "추출 완료", "Trace Studio가 결과를 받았습니다. 다음 요청을 기다립니다.");
+    } catch (error) {
+      setStatus("error", "결과 전송 실패", error.message || String(error));
+    } finally {
+      polling = false;
+      void poll();
+    }
+  }
+
+  async function sendError(message) {
+    try {
+      await fetch(`${API}/api/figma/plugin/jobs/${encodeURIComponent(message.jobId)}/result`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ error: message.message }),
+      });
+    } finally {
+      setStatus("error", "추출 실패", message.message || "Figma 노드를 읽지 못했습니다.");
+      polling = false;
+      void poll();
+    }
+  }
+
+  window.onmessage = (event) => {
+    const message = event.data.pluginMessage;
+    if (!message) return;
+    if (message.type === "plugin-ready") {
+      meta = message.meta;
+      renderMeta(meta);
+      connect.disabled = code.value.length !== 6;
+      setStatus("", "페어링 대기", "Trace Studio에서 만든 6자리 코드를 입력하세요.");
+    } else if (message.type === "job-result") void sendResult(message);
+    else if (message.type === "job-error") void sendError(message);
+  };
+</script>
+</body>
+</html>

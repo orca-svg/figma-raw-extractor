@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { strToU8, zipSync, type Zippable } from "fflate";
 import type { ArtifactRef, ExtractionEvent, FigmaExtractionInput, FigmaRunRecord, StoredArtifact } from "./types.js";
 
-export const RUN_TTL_MS = 30 * 60 * 1000;
+export const RUN_TTL_MS = 60 * 60 * 1000;
 export const MAX_RUN_ARTIFACT_BYTES = 100 * 1024 * 1024;
 const MAX_SESSION_RUNS = 3;
 
@@ -89,6 +89,7 @@ function publicRun(run: FigmaRunRecord) {
       tools: run.tools,
       artifactBytes: run.artifactBytes,
       artifacts: [...run.artifacts.values()].map(({ data: _data, ...artifact }) => artifact),
+      contextPackage: run.contextPackage,
     },
     events: run.events,
   };
@@ -114,9 +115,13 @@ export function buildFigmaRunZip(run: FigmaRunRecord): Uint8Array {
       "",
       run.input.transport === "codex"
         ? "이 번들은 Codex가 중계한 JSONL Tool 이벤트입니다. 직접 MCP content block 원문이 아니며, AI 실행 경로를 포함합니다."
-        : "이 번들은 AI 해석이나 코드 생성을 포함하지 않습니다. trace.ndjson과 responses의 값은 실제 MCP 호출 기록입니다.",
+        : run.input.transport === "plugin"
+          ? `이 번들은 Figma 개발 Plugin snapshot과 artifact${run.input.question ? ", 읽기 전용 Codex 질문 답변" : ""}을 포함합니다. 버전 작성자는 coarse_version_attribution입니다.`
+          : "이 번들은 AI 해석이나 코드 생성을 포함하지 않습니다. trace.ndjson과 responses의 값은 실제 MCP 호출 기록입니다.",
     ].join("\n")),
   };
+
+  if (run.contextPackage) files["context.json"] = strToU8(JSON.stringify(run.contextPackage, null, 2));
 
   for (const event of run.events) {
     if (event.state === "running" || event.response === undefined) continue;

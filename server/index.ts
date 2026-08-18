@@ -7,6 +7,8 @@ import { DemoMcpAdapter } from "./demo-adapter.js";
 import { runExtraction, extractIdentity, parseToolResult, resolveTool } from "./extract.js";
 import { FigmaDemoAdapter, FIGMA_DEMO_TARGET } from "./figma-demo-adapter.js";
 import { runFigmaExtraction } from "./figma-extract.js";
+import { runPluginFigmaExtraction } from "./figma-plugin-extract.js";
+import { bearerToken, FigmaPluginBridge } from "./figma-plugin-bridge.js";
 import {
   cancelCodexAuth,
   createCodexBridgeSession,
@@ -23,6 +25,12 @@ import {
   finishFigmaRemoteOAuth,
   type FigmaOAuthSession,
 } from "./figma-mcp-client.js";
+import {
+  beginFigmaRestOAuth,
+  clearFigmaRestOAuth,
+  figmaRestOAuthStatus,
+  finishFigmaRestOAuth,
+} from "./figma-rest-client.js";
 import {
   addRunToSession,
   buildFigmaRunZip,
@@ -47,7 +55,9 @@ import {
 import type {
   ExtractionEvent,
   FigmaExtractionInput,
+  FigmaPluginMeta,
   FigmaRunRecord,
+  FigmaRestOAuthSession,
   McpAdapter,
   NotionExtractionInput,
   CodexBridgeSession,
@@ -69,6 +79,7 @@ type NotionSession = {
 
 type FigmaSession = {
   oauth: FigmaOAuthSession;
+  rest: FigmaRestOAuthSession;
   codex: CodexBridgeSession;
   runs: Map<string, FigmaRunRecord>;
 };
@@ -80,6 +91,7 @@ type Session = {
 };
 
 const sessions = new Map<string, Session>();
+const figmaPluginBridge = new FigmaPluginBridge();
 const app = express();
 const PORT = Number(process.env.PORT ?? 8787);
 const API_ORIGIN = process.env.API_ORIGIN ?? `http://127.0.0.1:${PORT}`;
@@ -89,6 +101,7 @@ const FIGMA_CALLBACK_URL = `${API_ORIGIN}/api/figma/auth/callback`;
 const COOKIE = "mcp_trace_studio_session";
 
 app.disable("x-powered-by");
+app.use("/api/figma/plugin/jobs/:jobId/result", express.json({ limit: "22mb" }));
 app.use(express.json({ limit: "64kb" }));
 
 function parseCookies(req: Request): Record<string, string> {
@@ -105,7 +118,7 @@ function createSession(): Session {
   return {
     id: randomUUID(),
     notion: {},
-    figma: { oauth: createFigmaOAuthSession(), codex: createCodexBridgeSession(), runs: new Map() },
+    figma: { oauth: createFigmaOAuthSession(), rest: {}, codex: createCodexBridgeSession(), runs: new Map() },
   };
 }
 
@@ -188,7 +201,7 @@ async function ensureNotionAccessToken(session: NotionSession): Promise<string> 
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
-    endpoints: { notion: "https://mcp.notion.com/mcp", figmaDesktop: "http://127.0.0.1:3845/mcp", figmaRemote: "https://mcp.figma.com/mcp" },
+    endpoints: { notion: "https://mcp.notion.com/mcp", figmaDesktop: "http://127.0.0.1:3845/mcp", figmaRemote: "https://mcp.figma.com/mcp", figmaPlugin: "http://127.0.0.1:8787/api/figma/plugin" },
     now: new Date().toISOString(),
   });
 });
@@ -334,9 +347,25 @@ app.post(["/api/notion/extract/stream", "/api/extract/stream"], notionExtract);
 
 app.get("/api/figma/status", async (req, res) => {
   const session = getSession(req, res).figma;
-  const transport = req.query.transport === "remote" ? "remote" : req.query.transport === "codex" ? "codex" : "desktop";
+  const transport = req.query.transport === "remote" ? "remote" : req.query.transport === "codex" ? "codex" : req.query.transport === "plugin" ? "plugin" : "desktop";
   cleanupRuns(session.runs);
   if (transport === "codex") return res.json(await inspectCodexBridge(session.codex));
+  if (transport === "plugin") {
+    const plugin = figmaPluginBridge.status(getSession(req, res).id);
+    return res.json({
+      connected: plugin.connected,
+      transport,
+      beta: true,
+      tools: plugin.connected ? [
+        { name: "plugin_get_node_context", description: "현재 열린 파일의 링크 노드를 Plugin API로 직렬화합니다." },
+        { name: "plugin_export_artifacts", description: "현재 노드의 PNG와 원본 이미지·SVG를 내보냅니다." },
+        { name: "rest_get_version_history", description: "OAuth 연결 시 최근 버전의 노드를 비교합니다." },
+      ] : [],
+      plugin,
+      restOAuth: figmaRestOAuthStatus(session.rest),
+      message: plugin.connected ? "Figma Plugin Bridge가 추출 요청을 기다리고 있습니다." : "Trace Studio에서 페어링 코드를 만든 뒤 Figma 개발 플러그인에 입력해 주세요.",
+    });
+  }
   let adapter: McpAdapter | undefined;
   try {
     if (transport === "remote" && !session.oauth.tokens) {
@@ -357,6 +386,121 @@ app.get("/api/figma/status", async (req, res) => {
   } finally {
     await adapter?.close().catch(() => undefined);
   }
+});
+
+app.use("/api/figma/plugin", (req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  next();
+});
+
+app.post("/api/figma/plugin/pair/start", (req, res) => {
+  const session = getSession(req, res);
+  res.json(figmaPluginBridge.createPairing(session.id));
+});
+
+app.get("/api/figma/plugin/status", (req, res) => {
+  const session = getSession(req, res);
+  res.json(figmaPluginBridge.status(session.id));
+});
+
+function parsePluginMeta(value: unknown): FigmaPluginMeta | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.editorType !== "figma" && record.editorType !== "figjam") return undefined;
+  if (typeof record.pluginVersion !== "string" || !record.pluginVersion.trim()) return undefined;
+  const text = (key: string, max: number) => typeof record[key] === "string" ? String(record[key]).slice(0, max) : undefined;
+  const rawUser = record.user && typeof record.user === "object" ? record.user as Record<string, unknown> : undefined;
+  return {
+    pluginVersion: record.pluginVersion.slice(0, 40),
+    editorType: record.editorType,
+    fileKey: text("fileKey", 200),
+    fileName: text("fileName", 300),
+    pageName: text("pageName", 300),
+    user: rawUser ? {
+      id: typeof rawUser.id === "string" ? rawUser.id.slice(0, 200) : null,
+      name: typeof rawUser.name === "string" ? rawUser.name.slice(0, 300) : undefined,
+      photoUrl: typeof rawUser.photoUrl === "string" ? rawUser.photoUrl.slice(0, 2_000) : null,
+    } : undefined,
+  };
+}
+
+app.post("/api/figma/plugin/pair/complete", (req, res) => {
+  try {
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    const meta = parsePluginMeta(req.body?.meta);
+    if (!/^\d{6}$/.test(code) || !meta) return res.status(400).json({ message: "6자리 코드와 올바른 플러그인 정보가 필요합니다." });
+    const result = figmaPluginBridge.completePairing(code, meta, req.ip ?? "local");
+    res.json(result);
+  } catch (error) {
+    res.status(401).json({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/figma/plugin/jobs/next", async (req, res) => {
+  try {
+    const controller = new AbortController();
+    req.once("aborted", () => controller.abort());
+    const token = bearerToken(req.headers.authorization);
+    if (!token) return res.status(401).json({ message: "플러그인 세션 토큰이 필요합니다." });
+    const job = await figmaPluginBridge.nextJob(token, controller.signal);
+    if (!job) return res.status(204).end();
+    return res.json({ job });
+  } catch (error) {
+    return res.status(401).json({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.put("/api/figma/plugin/jobs/:jobId/artifacts/:slot", express.raw({ type: "*/*", limit: "10mb" }), (req, res) => {
+  try {
+    const token = bearerToken(req.headers.authorization);
+    const body = req.body instanceof Buffer ? new Uint8Array(req.body) : new Uint8Array();
+    figmaPluginBridge.uploadArtifact(token ?? "", String(req.params.jobId), String(req.params.slot), req.headers["content-type"]?.split(";")[0] ?? "application/octet-stream", body);
+    res.status(204).end();
+  } catch (error) {
+    res.status(400).json({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/figma/plugin/jobs/:jobId/result", (req, res) => {
+  try {
+    const token = bearerToken(req.headers.authorization);
+    if (!token) return res.status(401).json({ message: "플러그인 세션 토큰이 필요합니다." });
+    if (typeof req.body?.error === "string") figmaPluginBridge.submitError(token, String(req.params.jobId), req.body.error);
+    else if (req.body?.result) figmaPluginBridge.submitResult(token, String(req.params.jobId), req.body.result);
+    else return res.status(400).json({ message: "플러그인 결과 또는 오류가 필요합니다." });
+    return res.status(204).end();
+  } catch (error) {
+    return res.status(400).json({ message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/figma/rest/auth/start", async (req, res, next) => {
+  try {
+    const session = getSession(req, res).figma.rest;
+    res.json({ authUrl: await beginFigmaRestOAuth(session) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/figma/rest/auth/callback", async (req, res) => {
+  const session = getSession(req, res).figma.rest;
+  const ticket = typeof req.query.ticket === "string" ? req.query.ticket : "";
+  try {
+    if (!ticket) throw new Error("OAuth broker ticket이 없습니다.");
+    await finishFigmaRestOAuth(session, ticket);
+    res.redirect(`${APP_ORIGIN}/figma?restAuth=connected`);
+  } catch (error) {
+    clearFigmaRestOAuth(session);
+    res.redirect(`${APP_ORIGIN}/figma?restAuth=error&reason=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`);
+  }
+});
+
+app.post("/api/figma/rest/auth/logout", (req, res) => {
+  clearFigmaRestOAuth(getSession(req, res).figma.rest);
+  res.status(204).end();
 });
 
 app.post("/api/figma/codex/auth/start", async (req, res, next) => {
@@ -422,7 +566,7 @@ app.post("/api/figma/extract/stream", async (req, res) => {
   const session = rootSession.figma;
   const body = req.body as Partial<FigmaExtractionInput>;
   const mode = body.mode === "demo" ? "demo" : "live";
-  const transport = body.transport === "remote" ? "remote" : body.transport === "codex" ? "codex" : "desktop";
+  const transport = body.transport === "remote" ? "remote" : body.transport === "codex" ? "codex" : body.transport === "plugin" ? "plugin" : "desktop";
   const targetMode = body.targetMode === "selection" ? "selection" : "link";
   const input: FigmaExtractionInput = {
     target: mode === "demo" ? FIGMA_DEMO_TARGET : typeof body.target === "string" ? body.target.trim() : "",
@@ -446,6 +590,7 @@ app.post("/api/figma/extract/stream", async (req, res) => {
     const status = await inspectCodexBridge(session.codex);
     if (!status.connected) return res.status(401).json({ message: status.message ?? "Codex Bridge를 먼저 연결해 주세요." });
   }
+  if (mode === "live" && transport === "plugin" && !figmaPluginBridge.status(rootSession.id).connected) return res.status(401).json({ message: "Figma 플러그인을 먼저 페어링하고 열린 상태로 유지해 주세요." });
 
   const run = createFigmaRun(rootSession.id, input);
   addRunToSession(session.runs, run);
@@ -466,6 +611,8 @@ app.post("/api/figma/extract/stream", async (req, res) => {
   try {
     if (mode === "live" && transport === "codex") {
       await runCodexFigmaExtraction(session.codex, input, run, write, controller.signal);
+    } else if (mode === "live" && transport === "plugin") {
+      await runPluginFigmaExtraction(figmaPluginBridge, rootSession.id, session.rest, input, run, write, controller.signal);
     } else {
       adapter = mode === "demo"
         ? new FigmaDemoAdapter()
@@ -492,6 +639,73 @@ app.post("/api/figma/extract/stream", async (req, res) => {
   } finally {
     run.completedAt = new Date().toISOString();
     await adapter?.close().catch(() => undefined);
+    res.end();
+  }
+});
+
+app.post("/api/figma/questions/stream", async (req, res) => {
+  const rootSession = getSession(req, res);
+  const session = rootSession.figma;
+  const body = req.body as Partial<FigmaExtractionInput>;
+  const transport = body.transport === "plugin" ? "plugin" : body.transport === "codex" ? "codex" : undefined;
+  const question = typeof body.question === "string" ? body.question.trim().slice(0, 4_000) : "";
+  const target = typeof body.target === "string" ? body.target.trim() : "";
+  if (!transport) return res.status(400).json({ message: "질문은 Codex β 또는 Plugin 연결에서 사용할 수 있습니다." });
+  if (!target) return res.status(400).json({ message: "Figma 노드 링크를 입력해 주세요." });
+  if (!question) return res.status(400).json({ message: "노드에 대해 질문할 내용을 입력해 주세요." });
+  if (transport === "codex") {
+    const status = await inspectCodexBridge(session.codex);
+    if (!status.connected) return res.status(401).json({ message: status.message ?? "Codex Bridge를 먼저 연결해 주세요." });
+  } else if (!figmaPluginBridge.status(rootSession.id).connected) return res.status(401).json({ message: "Figma 플러그인을 먼저 페어링하고 열린 상태로 유지해 주세요." });
+
+  const input: FigmaExtractionInput = {
+    target,
+    targetMode: "link",
+    transport,
+    includeVariables: body.includeVariables !== false,
+    includeCodeConnect: body.includeCodeConnect !== false,
+    includeMotion: body.includeMotion !== false,
+    includeLibraries: body.includeLibraries === true,
+    includeAssets: body.includeAssets !== false,
+    clientFrameworks: typeof body.clientFrameworks === "string" && body.clientFrameworks.trim() ? body.clientFrameworks.trim().slice(0, 200) : "unknown",
+    clientLanguages: typeof body.clientLanguages === "string" && body.clientLanguages.trim() ? body.clientLanguages.trim().slice(0, 200) : "unknown",
+    codeConnectLabel: typeof body.codeConnectLabel === "string" && body.codeConnectLabel.trim() ? body.codeConnectLabel.trim().slice(0, 100) : undefined,
+    question,
+    mode: "live",
+  };
+  const run = createFigmaRun(rootSession.id, input);
+  addRunToSession(session.runs, run);
+  res.status(200);
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-MCP-Trace-Run", run.id);
+  res.flushHeaders();
+  const write = async (event: ExtractionEvent) => {
+    upsertRunEvent(run, event);
+    if (!res.writableEnded) res.write(`${JSON.stringify(event)}\n`);
+  };
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
+  try {
+    if (transport === "codex") await runCodexFigmaExtraction(session.codex, input, run, write, controller.signal);
+    else await runPluginFigmaExtraction(figmaPluginBridge, rootSession.id, session.rest, input, run, write, controller.signal);
+  } catch (error) {
+    await write({
+      type: "fatal",
+      id: "fatal",
+      order: Number.MAX_SAFE_INTEGER,
+      group: "summary",
+      label: "Figma 질문 중단",
+      state: "error",
+      provider: "figma",
+      runId: run.id,
+      origin: "internal",
+      startedAt: new Date().toISOString(),
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    run.completedAt = new Date().toISOString();
     res.end();
   }
 });

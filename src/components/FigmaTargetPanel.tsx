@@ -4,6 +4,7 @@ type Props = {
   options: FigmaExtractionOptions;
   onChange: (options: FigmaExtractionOptions) => void;
   onRun: (mode: "live" | "demo") => void;
+  onAsk: (questionOverride?: string) => void;
   running: boolean;
   connected: boolean;
 };
@@ -24,9 +25,11 @@ function detectedType(target: string) {
   return "링크 입력 대기";
 }
 
-export function FigmaTargetPanel({ options, onChange, onRun, running, connected }: Props) {
+export function FigmaTargetPanel({ options, onChange, onRun, onAsk, running, connected }: Props) {
   const patch = (next: Partial<FigmaExtractionOptions>) => onChange({ ...options, ...next });
   const canRun = connected && (options.targetMode === "selection" ? options.transport === "desktop" : Boolean(options.target));
+  const canAsk = connected && Boolean(options.target) && Boolean(options.question?.trim()) && (options.transport === "codex" || options.transport === "plugin");
+  const canInterpret = connected && Boolean(options.target) && (options.transport === "codex" || options.transport === "plugin");
   return (
     <section className="panel target-panel figma-target" aria-labelledby="figma-target-title">
       <div className="panel-heading">
@@ -52,6 +55,14 @@ export function FigmaTargetPanel({ options, onChange, onRun, running, connected 
         <div className="selection-well"><span className="selection-crosshair" aria-hidden="true" /><strong>Figma의 현재 선택을 사용합니다.</strong><p>실행 시 Design을 먼저 확인하고 파일 유형 오류일 때 FigJam으로 전환합니다.</p></div>
       )}
 
+      {options.transport === "codex" || options.transport === "plugin" ? (
+        <label className="field question-field">
+          <span>이 노드에 대해 질문</span>
+          <textarea value={options.question ?? ""} onChange={(event) => patch({ question: event.target.value })} rows={4} maxLength={4000} placeholder="예: 이 화면의 핵심 사용자 행동과 최근 변경 의도를 근거와 함께 설명해 줘" />
+          <small>질문할 때마다 최신 노드와 이미지를 다시 추출합니다. 이전 질문의 대화 문맥은 이어지지 않습니다.</small>
+        </label>
+      ) : null}
+
       <details className="advanced-options">
         <summary>고급 Tool 옵션</summary>
         <div className="two-fields">
@@ -63,8 +74,8 @@ export function FigmaTargetPanel({ options, onChange, onRun, running, connected 
           <Toggle checked={options.includeVariables} onChange={(value) => patch({ includeVariables: value })}>변수와 스타일</Toggle>
           <Toggle checked={options.includeCodeConnect} onChange={(value) => patch({ includeCodeConnect: value })}>Code Connect</Toggle>
           <Toggle checked={options.includeMotion} onChange={(value) => patch({ includeMotion: value })}>하위 모션</Toggle>
-          <Toggle checked={options.includeLibraries} disabled={options.transport === "desktop"} onChange={(value) => patch({ includeLibraries: value })}>Remote/Codex 라이브러리</Toggle>
-          <Toggle checked={options.includeAssets} disabled={options.transport === "desktop"} onChange={(value) => patch({ includeAssets: value })}>Remote/Codex 자산 다운로드</Toggle>
+          <Toggle checked={options.includeLibraries} disabled={options.transport === "desktop" || options.transport === "plugin"} onChange={(value) => patch({ includeLibraries: value })}>Remote/Codex 라이브러리</Toggle>
+          <Toggle checked={options.includeAssets} disabled={options.transport === "desktop"} onChange={(value) => patch({ includeAssets: value })}>Remote/Codex 다운로드 · Plugin export</Toggle>
         </div>
       </details>
 
@@ -73,8 +84,9 @@ export function FigmaTargetPanel({ options, onChange, onRun, running, connected 
       ) : null}
 
       <button className="primary-button figma-primary full" type="button" onClick={() => onRun("live")} disabled={!canRun || running}>
-        {running ? "Tool 호출 추적 중" : connected ? options.transport === "codex" ? "Codex를 통해 읽기" : "실제 Figma MCP로 읽기" : `${options.transport === "desktop" ? "Desktop" : options.transport === "remote" ? "Remote" : "Codex"} 연결을 확인하세요`}
+        {running ? "추출 실행 중" : connected ? options.transport === "codex" ? "Codex를 통해 읽기" : options.transport === "plugin" ? "Plugin으로 최신 노드 추출" : "실제 Figma MCP로 읽기" : `${options.transport === "desktop" ? "Desktop" : options.transport === "remote" ? "Remote" : options.transport === "plugin" ? "Plugin" : "Codex"} 연결을 확인하세요`}
       </button>
+      {options.transport === "codex" || options.transport === "plugin" ? <div className="question-actions"><button className="question-button" type="button" onClick={() => onAsk()} disabled={!canAsk || running}>{running ? "최신 근거 수집 중" : "최신 정보로 질문"}</button><button className="meaning-button" type="button" onClick={() => onAsk("이 노드가 제품에서 담당하는 역할, 핵심 사용자 행동, 정보 구조와 의도를 근거와 불확실성을 구분해 해석해 줘.")} disabled={!canInterpret || running}>제품 의미 해석</button></div> : null}
       <button className="demo-button figma-demo full" type="button" onClick={() => onRun("demo")} disabled={running}>Design 예제로 전체 여정 보기</button>
       <p className="demo-note">예제는 합성 Design 응답이며 FigJam 예제는 제공하지 않습니다.</p>
     </section>

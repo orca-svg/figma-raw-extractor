@@ -5,20 +5,28 @@ import {
   cancelCodexAuth,
   disconnect,
   disconnectFigmaRemote,
+  disconnectFigmaRest,
   getFigmaStatus,
   getStatus,
   startFigmaOAuth,
+  startFigmaRestOAuth,
+  startPluginPairing,
   startCodexFigmaOAuth,
   startCodexLogin,
   startOAuth,
   streamExtraction,
   streamFigmaExtraction,
+  streamFigmaQuestion,
 } from "./api";
+import figmaAppIcon from "./assets/figma-app-icon.svg";
+import notionAppIcon from "./assets/notion-app-icon.svg";
 import { ConnectionPanel } from "./components/ConnectionPanel";
 import { DataInspector } from "./components/DataInspector";
 import { ExportActions } from "./components/ExportActions";
 import { ExtractionTimeline } from "./components/ExtractionTimeline";
 import { FigmaConnectionPanel } from "./components/FigmaConnectionPanel";
+import { FigmaAnswerCard } from "./components/FigmaAnswerCard";
+import { FigmaHistoryCard } from "./components/FigmaHistoryCard";
 import { FigmaTargetPanel } from "./components/FigmaTargetPanel";
 import { FigmaToolsGuide } from "./components/FigmaToolsGuide";
 import { ReadPathStrip } from "./components/ReadPathStrip";
@@ -31,6 +39,7 @@ import type {
   ExtractionOptions,
   FigmaConnectionStatus,
   FigmaExtractionOptions,
+  FigmaQuestionAnswer,
   FigmaTransport,
   Provider,
 } from "./types";
@@ -58,6 +67,7 @@ const INITIAL_FIGMA_OPTIONS: FigmaExtractionOptions = {
   clientFrameworks: "unknown",
   clientLanguages: "unknown",
   codeConnectLabel: "",
+  question: "",
   mode: "live",
 };
 const FIGMA_SESSION_KEY = "mcp-trace-studio:figma-options";
@@ -65,7 +75,7 @@ const FIGMA_SESSION_KEY = "mcp-trace-studio:figma-options";
 function initialFigmaOptions(): FigmaExtractionOptions {
   try {
     const saved = JSON.parse(window.sessionStorage.getItem(FIGMA_SESSION_KEY) ?? "null") as Partial<FigmaExtractionOptions> | null;
-    const transport: FigmaTransport = saved?.transport === "remote" || saved?.transport === "codex" ? saved.transport : "desktop";
+    const transport: FigmaTransport = saved?.transport === "remote" || saved?.transport === "codex" || saved?.transport === "plugin" ? saved.transport : "desktop";
     return {
       ...INITIAL_FIGMA_OPTIONS,
       ...saved,
@@ -115,22 +125,34 @@ function latestComplete(events: ExtractionEvent[]) {
   return undefined;
 }
 
+function latestFigmaAnswer(events: ExtractionEvent[]): FigmaQuestionAnswer | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.group !== "answer" || event.state !== "success" || !event.response || typeof event.response !== "object") continue;
+    const response = event.response as Partial<FigmaQuestionAnswer>;
+    if (typeof response.answer === "string" && Array.isArray(response.evidence) && Array.isArray(response.uncertainties)) return response as FigmaQuestionAnswer;
+  }
+  return undefined;
+}
+
 function FigmaStage({ options, status }: { options: FigmaExtractionOptions; status: FigmaConnectionStatus }) {
   const type = options.targetMode === "selection" ? "현재 선택 · 자동 감지" : /\/board\//.test(options.target) ? "FigJam" : /\/design\//.test(options.target) ? "Figma Design" : "노드 링크 대기";
   return (
     <section className="provider-stage figma-stage" aria-label="Figma 추출 대상 스테이지">
-      <div className="stage-copy"><p className="eyebrow">Canvas to raw trace</p><h1>선택한 캔버스를<br />Tool 단위로 펼칩니다.</h1><p>구조, 변수, 기준 이미지와 모션이 어떤 MCP 호출에서 왔는지 원문 그대로 추적합니다.</p></div>
-      <div className="canvas-preview" aria-hidden="true">
-        <div className="preview-frame">
-          <span className="preview-node one" />
-          <span className="preview-node two" />
-          <span className="preview-node three" />
-          <div className="preview-caption">
-            <b>{type}</b>
-            <small>{status.connected ? `${options.transport} · ${status.tools?.length ?? 0} tools` : `${options.transport} 연결 대기`}</small>
+      <div className="provider-stage-inner">
+        <div className="app-icon-showcase figma-app-showcase"><img src={figmaAppIcon} alt="Figma 앱 아이콘" /></div>
+        <div className="canvas-preview" aria-hidden="true">
+          <div className="preview-frame">
+            <span className="preview-node one" />
+            <span className="preview-node two" />
+            <span className="preview-node three" />
+            <div className="preview-caption">
+              <b>{type}</b>
+              <small>{status.connected ? `${options.transport} · ${status.tools?.length ?? 0} tools` : `${options.transport} 연결 대기`}</small>
+            </div>
           </div>
+          <div className="trace-layer layer-one">context</div><div className="trace-layer layer-two">variables</div><div className="trace-layer layer-three">raw</div>
         </div>
-        <div className="trace-layer layer-one">context</div><div className="trace-layer layer-two">variables</div><div className="trace-layer layer-three">raw</div>
       </div>
     </section>
   );
@@ -139,8 +161,10 @@ function FigmaStage({ options, status }: { options: FigmaExtractionOptions; stat
 function NotionStage() {
   return (
     <section className="provider-stage notion-stage">
-      <div className="stage-copy"><p className="eyebrow">Document to raw trace</p><h1>페이지가 읽히는<br />경로를 남깁니다.</h1></div>
-      <p>계정과 대상을 정하면 검색부터 행 본문과 댓글까지 MCP 호출이 순서대로 쌓입니다. 실패와 생략도 숨기지 않습니다.</p>
+      <div className="provider-stage-inner">
+        <div className="app-icon-showcase notion-app-showcase"><img src={notionAppIcon} alt="Notion 앱 아이콘" /></div>
+        <p>계정과 대상을 정하면 검색부터 행 본문과 댓글까지 MCP 호출이 순서대로 쌓입니다. 실패와 생략도 숨기지 않습니다.</p>
+      </div>
     </section>
   );
 }
@@ -153,6 +177,7 @@ export default function App() {
     desktop: { connected: false, transport: "desktop" },
     remote: { connected: false, transport: "remote", beta: true },
     codex: { connected: false, transport: "codex", beta: true },
+    plugin: { connected: false, transport: "plugin", beta: true, plugin: { connected: false }, restOAuth: { connected: false } },
   });
   const [statusLoading, setStatusLoading] = useState(true);
   const [expectedEmail, setExpectedEmail] = useState("");
@@ -186,9 +211,10 @@ export default function App() {
 
   useEffect(() => {
     setStatusLoading(true);
-    void Promise.all([refreshNotion(), refreshFigma("desktop"), refreshFigma("remote"), refreshFigma("codex")]).finally(() => setStatusLoading(false));
+    void Promise.all([refreshNotion(), refreshFigma("desktop"), refreshFigma("remote"), refreshFigma("codex"), refreshFigma("plugin")]).finally(() => setStatusLoading(false));
     const params = new URLSearchParams(window.location.search);
-    if (params.has("auth")) window.history.replaceState({}, "", window.location.pathname);
+    if (params.get("restAuth") === "error") setFigmaError(params.get("reason") || "Figma 버전 이력 OAuth 연결에 실패했습니다.");
+    if (params.has("auth") || params.has("restAuth")) window.history.replaceState({}, "", window.location.pathname);
   }, [refreshFigma, refreshNotion]);
 
   useEffect(() => {
@@ -202,6 +228,12 @@ export default function App() {
   }, [figmaStatuses.codex.authFlow?.state, refreshFigma]);
 
   useEffect(() => {
+    if (figmaOptions.transport !== "plugin") return;
+    const timer = window.setInterval(() => void refreshFigma("plugin"), 2_000);
+    return () => window.clearInterval(timer);
+  }, [figmaOptions.transport, refreshFigma]);
+
+  useEffect(() => {
     const onPopState = () => startTransition(() => setRoute(routeFromPath()));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -211,6 +243,7 @@ export default function App() {
   const figmaSelected = useMemo(() => figmaEvents.find((event) => event.id === figmaSelectedId) ?? figmaEvents.at(-1), [figmaEvents, figmaSelectedId]);
   const notionComplete = latestComplete(notionEvents);
   const figmaComplete = latestComplete(figmaEvents);
+  const figmaAnswer = latestFigmaAnswer(figmaEvents);
 
   const navigate = (next: Route) => (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -257,19 +290,41 @@ export default function App() {
     }
   };
 
+  const askFigma = async (questionOverride?: string) => {
+    figmaController.current?.abort();
+    const controller = new AbortController();
+    figmaController.current = controller;
+    setFigmaEvents([]); setFigmaSelectedId(undefined); setFigmaError(undefined); setFigmaRunning(true);
+    try {
+      const question = questionOverride?.trim() || figmaOptions.question?.trim() || "";
+      if (questionOverride) setFigmaOptions((current) => ({ ...current, question }));
+      await streamFigmaQuestion({ ...figmaOptions, mode: "live", question }, (event) => {
+        setFigmaEvents((current) => upsertEvent(current, event));
+        setFigmaSelectedId((current) => current ?? event.id);
+      }, controller.signal);
+    } catch (error) {
+      if (!controller.signal.aborted) setFigmaError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (!controller.signal.aborted) {
+        setFigmaRunning(false);
+        void refreshFigma(figmaOptions.transport);
+      }
+    }
+  };
+
   const changeFigmaTransport = (transport: FigmaTransport) => {
     setFigmaOptions((current) => ({
       ...current,
       transport,
       targetMode: transport !== "desktop" && current.targetMode === "selection" ? "link" : current.targetMode,
-      includeLibraries: transport !== "desktop" ? current.includeLibraries : false,
+      includeLibraries: transport === "remote" || transport === "codex" ? current.includeLibraries : false,
       includeAssets: transport !== "desktop" ? current.includeAssets : false,
     }));
   };
 
   const activeFigmaStatus = figmaStatuses[figmaOptions.transport];
   const activeConnected = route.provider === "notion" ? notionStatus.connected : activeFigmaStatus.connected;
-  const connectionCopy = statusLoading ? "연결 확인 중" : activeConnected ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : `${figmaOptions.transport === "desktop" ? "Desktop" : figmaOptions.transport === "remote" ? "Remote" : "Codex"} 준비됨` : "연결 안 됨";
+  const connectionCopy = statusLoading ? "연결 확인 중" : activeConnected ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : `${figmaOptions.transport === "desktop" ? "Desktop" : figmaOptions.transport === "remote" ? "Remote" : figmaOptions.transport === "plugin" ? "Plugin" : "Codex"} 준비됨` : "연결 안 됨";
   const motionProps = reducedMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0.16 } }
     : { initial: { opacity: 0, x: route.provider === "figma" ? 18 : -18, filter: "blur(6px)" }, animate: { opacity: 1, x: 0, filter: "blur(0px)" }, exit: { opacity: 0, x: route.provider === "figma" ? -18 : 18, filter: "blur(5px)" }, transition: { type: "spring" as const, bounce: 0, duration: 0.38 } };
@@ -314,9 +369,11 @@ export default function App() {
               <FigmaStage options={figmaOptions} status={activeFigmaStatus} />
               {figmaComplete ? <section className={`completion-bar figma-completion ${figmaComplete.state}`}><div><span>마지막 실행</span><strong>{figmaComplete.message}</strong></div><button type="button" onClick={() => setFigmaSelectedId(figmaComplete.id)}>결과 열기</button></section> : null}
               {figmaComplete?.runId ? <ExportActions runId={figmaComplete.runId} /> : null}
+              <FigmaAnswerCard answer={figmaAnswer} />
+              <FigmaHistoryCard events={figmaEvents} />
               {figmaError ? <div className="page-error" role="alert">{figmaError}</div> : null}
               <main className="workspace figma-workspace">
-                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} running={figmaRunning} connected={activeFigmaStatus.connected} /></aside>
+                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} onPluginPair={startPluginPairing} onRestOAuth={async () => window.location.assign(await startFigmaRestOAuth())} onRestDisconnect={disconnectFigmaRest} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} onAsk={(question) => void askFigma(question)} running={figmaRunning} connected={activeFigmaStatus.connected} /></aside>
                 <ExtractionTimeline events={figmaEvents} selectedId={figmaSelected?.id} onSelect={(event) => setFigmaSelectedId(event.id)} running={figmaRunning} provider="figma" />
                 <DataInspector event={figmaSelected} />
               </main>

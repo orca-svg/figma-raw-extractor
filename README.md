@@ -8,8 +8,8 @@ Notion과 Figma MCP가 실제로 호출한 Tool의 입력, 원시 응답, 소요
 
 - `/notion`: Notion 계정 연결, 페이지·데이터베이스 추출 타임라인
 - `/notion/tools`: Notion MCP Tool 지도와 워크스페이스별 가용 상태
-- `/figma`: Figma Desktop/Remote/Codex Bridge 연결, Design·FigJam 노드 추출 타임라인
-- `/figma/tools`: Desktop/Remote/Codex 및 파일 유형별 Figma MCP Tool 지도
+- `/figma`: Figma Desktop/Remote/Codex Bridge/개발 Plugin 연결, Design·FigJam 노드 추출과 근거 기반 질문
+- `/figma/tools`: Desktop/Remote/Codex/Plugin 및 파일 유형별 Figma 읽기 경로 지도
 - `/`와 기존 `/tools`는 각각 `/notion`, `/notion/tools`로 이동합니다.
 
 ## 요구 사항
@@ -19,6 +19,8 @@ Notion과 Figma MCP가 실제로 호출한 Tool의 입력, 원시 응답, 소요
 - Notion 실제 추출: 접근 가능한 Notion 계정 또는 개인 토큰
 - Figma Desktop 추출: 최신 Figma 데스크톱 앱과 Dev Mode MCP 서버
 - Figma Codex Bridge 추출: 로그인된 Codex Desktop 또는 `codex` CLI와 Codex에 등록된 Figma MCP
+- Figma Plugin 추출: Figma Desktop과 직접 설치한 `plugins/figma-trace/manifest.json`
+- 최근 버전 비교: 내부 Figma OAuth App과 배포된 `oauth-broker/` Vercel Function
 
 ```bash
 nvm use
@@ -96,6 +98,30 @@ codex mcp add figma --url https://mcp.figma.com/mcp
 
 Codex의 `get_screenshot`이 짧은 수명의 Figma `image_url`을 반환하면 서버가 즉시 이미지를 내려받아 실행 artifact로 보관합니다. 인스펙터의 `시각 자료` 탭에서 미리볼 수 있으며 ZIP의 `artifacts/screenshots/`에도 포함됩니다. 기존 실행처럼 URL만 남아 있는 동안에는 같은 탭에서 임시 미리보기를 제공합니다.
 
+### Plugin Bridge
+
+일반 사용자에게 Desktop MCP 토글이 보이지 않는 환경을 위한 내부 파일럿 연결입니다. 프로젝트 루트에서 `npm run build:plugin`을 실행하고 [개발 플러그인 안내](plugins/figma-trace/README.md)에 따라 manifest를 Figma Desktop에 가져옵니다.
+
+1. `/figma`에서 `Plugin`을 선택하고 6자리 페어링 코드를 만듭니다.
+2. 열린 Design 또는 FigJam 파일에서 개발 플러그인을 실행하고 코드를 입력합니다.
+3. 추출할 프레임이나 레이어를 선택하고 macOS는 `Command L`, Windows는 `Ctrl L`을 누릅니다. 우클릭 메뉴의 `Copy/Paste as → Copy link to selection`을 사용해도 됩니다.
+4. 복사한 `node-id` 포함 링크를 Trace Studio에 입력해 현재 snapshot·PNG·하위 이미지/SVG를 추출합니다.
+5. 버전 변화도 필요하면 별도의 `Figma 버전 이력 OAuth 연결`을 완료합니다.
+
+페어링 코드는 5분 동안 유효하고 세션 토큰은 플러그인 메모리에만 남습니다. 연결되면 플러그인 창은 캔버스를 덜 가리도록 `280×176`으로 자동 축소됩니다. 다음 요청을 받으려면 창을 열어 둬야 하며, `X`로 닫으면 다시 열고 새 코드로 페어링해야 합니다. 이미 Trace Studio가 받은 실행 결과는 닫아도 유지되지만 `노드 추출 중` 또는 `결과 전송 중`에는 닫지 마세요.
+
+file key가 다르거나 노드가 없으면 artifact를 보내기 전에 중단합니다. 사용자가 실행한 순간만 읽으며 지속적인 변경 감시는 하지 않습니다.
+
+### 노드 질문과 제품 의미 해석
+
+`Codex β`와 `Plugin` 모두 링크 아래 질문 입력과 `최신 정보로 질문`을 제공합니다. `제품 의미 해석`은 제품 역할·핵심 행동·정보 구조를 묻는 준비된 질문을 같은 경로로 실행합니다. 질문마다 최신 노드와 screenshot을 다시 읽고 이전 대화는 이어받지 않습니다.
+
+- Codex β: Figma MCP 읽기 Tool을 호출한 같은 실행에서 구조화 답변 생성
+- Plugin: Plugin snapshot, 현재 artifact, 최근 최대 5개 버전 diff를 만든 뒤 빈 임시 디렉터리의 읽기 전용 Codex CLI에 전달
+- 답변: `answer`, node/version/artifact/tool `evidence`, `uncertainties`, model·prompt version·생성 시각
+
+레이어명·텍스트·주석은 신뢰할 수 없는 근거로 격리합니다. 디자인 안의 명령문은 수행하지 않으며 근거가 부족하면 확인 불가로 답합니다. 버전 작성자 귀속은 클릭 단위 감사 로그가 아니라 `coarse_version_attribution`입니다.
+
 ### 대상 링크
 
 - Figma Design: `https://www.figma.com/design/<file-key>/...?node-id=1-2`
@@ -152,6 +178,7 @@ Figma 실행 결과는 전체 JSON으로 복사하거나 ZIP으로 받을 수 �
 
 ```text
 manifest.json
+context.json
 trace.ndjson
 responses/<order>-<tool>.json
 artifacts/screenshots/*
@@ -159,7 +186,7 @@ artifacts/assets/*
 README.md
 ```
 
-Figma 실행 기록은 서버 메모리에 30분 동안, 세션당 최근 3개를 보관합니다. artifact는 실행당 100MB까지 저장하며, 초과하면 추출은 계속하되 제외된 artifact를 warning으로 남깁니다. 서버 재시작 시 인증 정보와 실행 기록은 사라지며 원문을 영구 저장하거나 서버 로그에 남기지 않습니다.
+Figma 실행 기록은 서버 메모리에 1시간 동안, 세션당 최근 3개를 보관합니다. artifact는 하나당 10MB, 실행당 100MB까지 저장합니다. 서버 재시작 시 인증 정보와 실행 기록은 사라지며 사용자가 ZIP을 선택했을 때만 영구 파일을 만듭니다.
 
 ## API
 
@@ -175,14 +202,24 @@ Notion:
 
 Figma:
 
-- `GET /api/figma/status?transport=desktop|remote|codex`
+- `GET /api/figma/status?transport=desktop|remote|codex|plugin`
 - `POST /api/figma/auth/start`
 - `GET /api/figma/auth/callback`
 - `POST /api/figma/auth/logout`
 - `POST /api/figma/codex/auth/start`
 - `POST /api/figma/codex/figma/start`
 - `POST /api/figma/codex/auth/cancel`
+- `POST /api/figma/plugin/pair/start`
+- `POST /api/figma/plugin/pair/complete`
+- `GET /api/figma/plugin/status`
+- `GET /api/figma/plugin/jobs/next`
+- `PUT /api/figma/plugin/jobs/:jobId/artifacts/:slot`
+- `POST /api/figma/plugin/jobs/:jobId/result`
+- `POST /api/figma/rest/auth/start`
+- `GET /api/figma/rest/auth/callback`
+- `POST /api/figma/rest/auth/logout`
 - `POST /api/figma/extract/stream`
+- `POST /api/figma/questions/stream`
 - `GET /api/figma/runs/:runId`
 - `GET /api/figma/runs/:runId/bundle.zip`
 - `GET /api/figma/runs/:runId/artifacts/:artifactId`
@@ -198,6 +235,9 @@ Figma:
 | `APP_ORIGIN` | 개발 `http://127.0.0.1:5173` | OAuth 뒤 돌아올 Web 주소 |
 | `CODEX_BRIDGE_MODEL` | `gpt-5.5` | Codex Bridge에서 사용할 로컬 Codex 모델 |
 | `CODEX_BRIDGE_REASONING` | `low` | Codex Bridge reasoning effort |
+| `FIGMA_REST_BROKER_URL` | 없음 | 배포한 Figma REST OAuth broker 공개 주소 |
+
+`oauth-broker/`에는 `FIGMA_REST_CLIENT_ID`, `FIGMA_REST_CLIENT_SECRET`, `BROKER_TICKET_SECRET`, `LOCAL_CALLBACK_ORIGIN`을 Vercel 비밀값으로 등록합니다. 선택적으로 `BROKER_PUBLIC_ORIGIN`을 고정할 수 있습니다. 자세한 내용은 [OAuth broker 안내](oauth-broker/README.md)를 봅니다.
 
 ## 검증
 
@@ -205,12 +245,15 @@ Figma:
 npm run typecheck
 npm test
 npm run build
+npm --prefix oauth-broker run typecheck
 ```
 
 ## 보안 원칙
 
+- `.env`와 `oauth-broker/.env`는 Git에서 제외합니다. 저장소의 `.env.example`에는 placeholder만 두고 실제 client secret, token, 개인 계정 정보는 커밋하지 않습니다.
 - Notion과 독립 Figma Remote의 연결·실행 상태는 서로 분리하며 토큰은 서버 세션 메모리에만 저장합니다. Codex Bridge 자격 증명은 앱이 읽거나 저장하지 않고 Codex 자체 인증 저장소가 관리합니다.
-- 실제 추출은 읽기 Tool로 제한합니다.
+- 실제 추출은 읽기 Tool과 읽기 전용 Plugin API로 제한합니다.
 - `use_figma`, 업로드, 파일 생성, Code Connect 쓰기 Tool은 호출하지 않습니다.
 - Codex Bridge는 직접 MCP 원문이 아니라 중계 이벤트이므로 번들의 `transport`와 각 이벤트의 `origin`을 확인하세요.
+- OAuth broker는 PKCE·암호화된 짧은 수명 ticket·로컬 redeem secret으로 코드 교환과 갱신만 수행하며 디자인 원문을 받지 않습니다.
 - 원시 응답에는 비공개 문서와 디자인 정보가 포함될 수 있으므로 ZIP을 외부에 공유하기 전에 확인하세요.
