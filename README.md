@@ -28,7 +28,17 @@ npm run dev
 실행 주소:
 
 - Web: http://127.0.0.1:5173/notion
+- Figma: http://127.0.0.1:5173/figma
 - API: http://127.0.0.1:8787/api/health
+
+연결 없이 UI와 전체 추출 흐름을 먼저 확인하려면 `/figma`의 `Design 예제로 전체 여정 보기` 또는 `/notion`의 `26행 예제로 먼저 보기`를 누릅니다. 예제 응답은 실제 MCP 실행과 섞이지 않습니다.
+
+프로덕션 빌드는 API 서버가 `dist`의 Web 파일도 함께 제공합니다.
+
+```bash
+npm run build
+npm start
+```
 
 ## Notion 연결
 
@@ -58,9 +68,33 @@ Notion 모드는 OAuth 또는 개인 토큰을 지원합니다. 토큰은 브라
 
 서버는 `http://127.0.0.1:3845/mcp`에 직접 연결합니다. 노드 링크와 Figma 앱의 현재 선택을 모두 지원합니다.
 
+Desktop MCP는 브라우저가 아니라 이 프로젝트의 API 서버에서 `127.0.0.1:3845`로 연결합니다. 따라서 실제 Desktop 추출은 Figma 앱과 API 서버를 같은 컴퓨터에서 실행해야 합니다.
+
 ### Remote MCP beta
 
 Remote는 `https://mcp.figma.com/mcp`의 OAuth 흐름을 사용합니다. Figma의 승인 클라이언트 정책에 따라 이 독립 클라이언트의 인증이 제한될 수 있으며, 실패해도 Desktop 모드는 계속 사용할 수 있습니다.
+
+연결 후 `whoami` Tool이 제공되면 계정·플랜·seat 응답도 추적합니다. Remote는 링크 기반이며 현재 선택 모드는 지원하지 않습니다.
+
+### 대상 링크
+
+- Figma Design: `https://www.figma.com/design/<file-key>/...?node-id=1-2`
+- Design branch: `https://www.figma.com/design/<base-key>/branch/<branch-key>/...?node-id=1-2`
+- FigJam: `https://www.figma.com/board/<file-key>/...?node-id=1-2`
+
+`node-id`가 없는 파일 전체 링크는 실행하지 않습니다. node ID는 `1-2`와 `1:2` 형식을 모두 받아 MCP 입력용 `1:2`로 정규화합니다. Slides와 Make 링크는 지원하지 않습니다.
+
+### 기본 고급 옵션
+
+| 옵션 | 기본값 | 범위 |
+| --- | --- | --- |
+| 변수와 스타일 | 켬 | `get_variable_defs` |
+| Code Connect | 켬 | `get_code_connect_map` |
+| 하위 모션 | 켬 | `get_motion_context`, `recursive: true` |
+| Remote 라이브러리 | 끔 | Remote의 `get_libraries` |
+| Remote 자산 다운로드 | 끔 | Remote의 `download_assets` |
+| Frameworks / Languages | `unknown` | Tool 입력 힌트 |
+| Code Connect label | 없음 | 입력했을 때만 전달 |
 
 ### 파일 유형과 Tool 흐름
 
@@ -70,25 +104,29 @@ Design 기본 흐름:
 
 1. `tools/list`
 2. `get_design_context`
-3. 큰 응답일 때 `get_metadata`
-4. `get_screenshot`
+3. 응답이 너무 크거나 metadata-only일 때 `get_metadata`
+4. `get_screenshot` — 최대 변 2048px
 5. `get_variable_defs`
 6. `get_code_connect_map`
 7. `get_motion_context`
-8. 선택 옵션에 따라 `get_libraries`, `download_assets`
+8. Remote 선택 옵션에 따라 `get_libraries`, `download_assets`
 
 FigJam 기본 흐름:
 
 1. `tools/list`
 2. `get_figjam`
-3. `get_screenshot`
-4. 선택 옵션에 따라 `download_assets`
+3. `get_screenshot` — 최대 변 2048px
+4. Remote 선택 옵션에 따라 `download_assets`
 
 Figma Design 예제 모드는 연결 없이 합성 MCP 응답과 screenshot artifact를 재생합니다. FigJam 예제는 제공하지 않습니다.
 
+연결 방식이나 파일 유형에 맞는 Tool이 없으면 호출을 실패시키지 않고 정확한 이유와 함께 `skipped` 이벤트로 남깁니다. 실제 MCP 쓰기 Tool, `use_figma`, 업로드, 생성 Tool은 추출 경로에서 호출하지 않습니다.
+
 ## 원시 응답과 번들
 
-인스펙터는 원시 응답을 기본 탭으로 엽니다. 이미지와 blob은 base64를 UI에 출력하지 않고 binary artifact로 분리합니다.
+인스펙터는 `원시 응답`을 기본 탭으로 열고 `MCP 입력`, `추출 메타`, `시각 자료`를 함께 제공합니다. 텍스트·JSON·XML content block은 원문을 유지하며 이미지·오디오·resource blob은 base64를 UI에 출력하지 않고 binary artifact로 분리합니다.
+
+요약 값은 노드·변수·매핑·artifact 수, 응답 크기, 잘림과 누락 Tool처럼 결정적으로 계산할 수 있는 정보만 포함합니다. AI 해석, Skill 실행, 코드 생성은 수행하지 않습니다.
 
 Figma 실행 결과는 전체 JSON으로 복사하거나 ZIP으로 받을 수 있습니다.
 
@@ -101,7 +139,7 @@ artifacts/assets/*
 README.md
 ```
 
-실행 기록은 서버 메모리에 30분 동안, 세션당 최근 3개, 총 artifact 100MB까지 보관합니다. 영구 저장하거나 서버 로그에 원문을 남기지 않습니다.
+Figma 실행 기록은 서버 메모리에 30분 동안, 세션당 최근 3개를 보관합니다. artifact는 실행당 100MB까지 저장하며, 초과하면 추출은 계속하되 제외된 artifact를 warning으로 남깁니다. 서버 재시작 시 인증 정보와 실행 기록은 사라지며 원문을 영구 저장하거나 서버 로그에 남기지 않습니다.
 
 ## API
 
@@ -124,6 +162,7 @@ Figma:
 - `POST /api/figma/extract/stream`
 - `GET /api/figma/runs/:runId`
 - `GET /api/figma/runs/:runId/bundle.zip`
+- `GET /api/figma/runs/:runId/artifacts/:artifactId`
 
 추출 스트림은 `application/x-ndjson`이며 각 이벤트에 provider, runId, origin, Tool, 입력, 원시 응답, 상태, 소요 시간, 응답 byte와 artifact 참조가 포함됩니다.
 
@@ -145,7 +184,7 @@ npm run build
 
 ## 보안 원칙
 
-- Notion/Figma 인증 정보는 서버 세션 메모리에만 저장합니다.
+- Notion과 Figma의 연결·실행 상태는 서로 독립적으로 관리하며 인증 정보는 서버 세션 메모리에만 저장합니다.
 - 실제 추출은 읽기 Tool로 제한합니다.
 - `use_figma`, 업로드, 파일 생성, Code Connect 쓰기 Tool은 호출하지 않습니다.
 - 원시 응답에는 비공개 문서와 디자인 정보가 포함될 수 있으므로 ZIP을 외부에 공유하기 전에 확인하세요.
