@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { FigmaConnectionStatus, FigmaTransport } from "../types";
+import type { CodexAuthFlow, FigmaConnectionStatus, FigmaTransport } from "../types";
 
 type Props = {
   statuses: Record<FigmaTransport, FigmaConnectionStatus>;
@@ -8,6 +8,9 @@ type Props = {
   onRefresh: (transport: FigmaTransport) => Promise<void>;
   onOAuth: () => Promise<void>;
   onDisconnect: () => Promise<void>;
+  onCodexLogin: () => Promise<CodexAuthFlow>;
+  onCodexFigmaOAuth: () => Promise<CodexAuthFlow>;
+  onCodexCancel: () => Promise<void>;
   busy: boolean;
 };
 
@@ -22,13 +25,22 @@ function identityLabel(value: unknown): string | undefined {
   return undefined;
 }
 
-export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, busy }: Props) {
+export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, busy }: Props) {
   const [error, setError] = useState<string>();
   const status = statuses[transport];
   const handle = async (action: () => Promise<void>) => {
     setError(undefined);
     try {
       await action();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+  const startCodexFlow = async (action: () => Promise<CodexAuthFlow>) => {
+    setError(undefined);
+    try {
+      await action();
+      await onRefresh("codex");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -41,14 +53,56 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
         <div><p className="eyebrow">Connection</p><h2 id="figma-connection-title">Figma 연결</h2></div>
       </div>
       <div className="segmented-control" role="group" aria-label="Figma MCP 연결 방식">
-        {(["desktop", "remote"] as const).map((item) => (
+        {(["desktop", "remote", "codex"] as const).map((item) => (
           <button key={item} type="button" className={transport === item ? "active" : ""} aria-pressed={transport === item} onClick={() => onTransportChange(item)}>
-            {item === "desktop" ? "Desktop" : "Remote β"}
+            {item === "desktop" ? "Desktop" : item === "remote" ? "Remote β" : "Codex β"}
           </button>
         ))}
       </div>
 
-      {status.connected ? (
+      {transport === "codex" ? (
+        <div className="codex-connection-body">
+          <div className="bridge-disclosure">
+            <span>CODEX BRIDGE</span>
+            <p>Codex가 읽기 전용 프롬프트로 Figma Tool을 호출합니다. 직접 MCP 원시 응답이 아니라 Codex JSONL Tool 이벤트를 기록합니다.</p>
+          </div>
+
+          <div className="auth-rail" aria-label="Codex Bridge 인증 상태">
+            <div className={status.codex?.authenticated ? "ready" : "waiting"}>
+              <span>01</span>
+              <p><strong>Codex 계정</strong><small>{status.codex?.authenticated ? "인증됨" : status.codex?.installed ? "기기 로그인 필요" : "CLI 설치 필요"}</small></p>
+              <i aria-hidden="true" />
+            </div>
+            <div className={status.figmaMcp?.authenticated ? "ready" : "waiting"}>
+              <span>02</span>
+              <p><strong>Figma OAuth</strong><small>{status.figmaMcp?.authenticated ? "인증됨" : status.figmaMcp?.configured ? "승인 필요" : "MCP 설정 필요"}</small></p>
+              <i aria-hidden="true" />
+            </div>
+          </div>
+
+          {status.authFlow ? (
+            <div className={`auth-flow ${status.authFlow.state}`} role="status">
+              <div><strong>{status.authFlow.kind === "codex" ? "Codex 인증" : "Figma 인증"}</strong><span>{status.authFlow.state === "waiting" ? "대기 중" : status.authFlow.state === "complete" ? "완료" : "확인 필요"}</span></div>
+              {status.authFlow.userCode ? <button type="button" className="device-code" onClick={() => void navigator.clipboard.writeText(status.authFlow!.userCode!)} title="기기 코드 복사">{status.authFlow.userCode}</button> : null}
+              {status.authFlow.authUrl ? <a className="auth-link" href={status.authFlow.authUrl} target="_blank" rel="noreferrer">공식 인증 화면 열기 ↗</a> : null}
+              {status.authFlow.message ? <p>{status.authFlow.message}</p> : null}
+            </div>
+          ) : null}
+
+          <div className="codex-auth-actions">
+            {!status.codex?.authenticated ? <button className="secondary-button full" type="button" onClick={() => void startCodexFlow(onCodexLogin)} disabled={busy || status.codex?.installed === false}>Codex 기기 로그인 시작</button> : null}
+            {!status.figmaMcp?.authenticated ? <button className="primary-button full figma-primary" type="button" onClick={() => void startCodexFlow(onCodexFigmaOAuth)} disabled={busy || !status.codex?.authenticated || !status.figmaMcp?.configured}>Figma OAuth 시작</button> : null}
+            {status.connected ? <div className="connected-line codex-ready"><span className="status-dot success" /><strong>Codex Bridge 준비됨</strong></div> : null}
+            <div className="inline-actions">
+              <button className="text-button" type="button" onClick={() => void handle(() => onRefresh("codex"))} disabled={busy}>상태 다시 확인</button>
+              {status.authFlow?.state === "waiting" ? <button className="text-button" type="button" onClick={() => void handle(async () => { await onCodexCancel(); await onRefresh("codex"); })} disabled={busy}>인증 취소</button> : null}
+            </div>
+          </div>
+          <p className="credential-note">비밀번호나 토큰은 이 화면에 입력하지 않습니다. 열린 Codex/Figma 공식 화면에서 인증하면 CLI가 안전하게 보관합니다.</p>
+          {status.message ? <p className="connection-detail">{status.message}</p> : null}
+          {status.codex?.version ? <code className="bridge-version">{status.codex.version}</code> : null}
+        </div>
+      ) : status.connected ? (
         <div className="connected-card figma-card">
           <div className="connected-line"><span className="status-dot success" /><strong>{transport === "desktop" ? "Figma Desktop 준비됨" : identityLabel(status.identity) ?? "Figma Remote 연결됨"}</strong></div>
           <p>{status.tools?.length ?? 0}개 MCP Tool을 확인했습니다.</p>

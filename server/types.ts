@@ -1,7 +1,8 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { ChildProcess } from "node:child_process";
 
 export type Provider = "notion" | "figma";
-export type TraceOrigin = "mcp" | "internal";
+export type TraceOrigin = "mcp" | "internal" | "codex";
 
 export type ToolDescriptor = {
   name: string;
@@ -29,7 +30,7 @@ export type NotionExtractionInput = {
 /** Kept as an alias for the existing Notion pipeline and its tests. */
 export type ExtractionInput = NotionExtractionInput;
 
-export type FigmaTransport = "desktop" | "remote";
+export type FigmaTransport = "desktop" | "remote" | "codex";
 export type FigmaFileType = "design" | "figjam";
 export type FigmaTargetMode = "link" | "selection";
 
@@ -111,4 +112,30 @@ export type FigmaRunRecord = {
   events: ExtractionEvent[];
   artifacts: Map<string, StoredArtifact>;
   artifactBytes: number;
+};
+
+export type CodexAuthFlow = {
+  kind: "codex" | "figma";
+  state: "waiting" | "complete" | "error";
+  authUrl?: string;
+  userCode?: string;
+  message?: string;
+  startedAt: number;
+};
+
+export type CodexBridgeSession = {
+  flow?: CodexAuthFlow;
+  process?: ChildProcess;
+  tools: ToolDescriptor[];
+};
+
+export type CodexBridgeStatus = {
+  connected: boolean;
+  transport: "codex";
+  beta: true;
+  tools?: ToolDescriptor[];
+  codex: { installed: boolean; version?: string; authenticated: boolean };
+  figmaMcp: { configured: boolean; enabled: boolean; authenticated: boolean; authStatus?: string; url?: string };
+  authFlow?: CodexAuthFlow;
+  message?: string;
 };

@@ -1,5 +1,6 @@
 import type {
   ConnectionStatus,
+  CodexAuthFlow,
   ExtractionEvent,
   ExtractionOptions,
   FigmaConnectionStatus,
@@ -97,6 +98,21 @@ export async function startFigmaOAuth(): Promise<string> {
 export async function disconnectFigmaRemote(): Promise<void> {
   const response = await fetch("/api/figma/auth/logout", { method: "POST", credentials: "same-origin" });
   if (!response.ok) throw new Error("Figma Remote 연결 해제에 실패했습니다.");
+}
+
+export async function startCodexLogin(): Promise<CodexAuthFlow> {
+  const response = await fetch("/api/figma/codex/auth/start", { method: "POST", credentials: "same-origin" });
+  return (await readJson<{ flow: CodexAuthFlow }>(response)).flow;
+}
+
+export async function startCodexFigmaOAuth(): Promise<CodexAuthFlow> {
+  const response = await fetch("/api/figma/codex/figma/start", { method: "POST", credentials: "same-origin" });
+  return (await readJson<{ flow: CodexAuthFlow }>(response)).flow;
+}
+
+export async function cancelCodexAuth(): Promise<void> {
+  const response = await fetch("/api/figma/codex/auth/cancel", { method: "POST", credentials: "same-origin" });
+  if (!response.ok) throw new Error("Codex 인증 취소에 실패했습니다.");
 }
 
 export function streamFigmaExtraction(

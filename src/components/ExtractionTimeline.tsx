@@ -60,7 +60,7 @@ export function ExtractionTimeline({ events, selectedId, onSelect, running, prov
               <button type="button" className={`event-card ${selectedId === event.id ? "selected" : ""}`} onClick={() => onSelect(event)}>
                 <span className="event-index">{String(event.order).padStart(2, "0")}</span>
                 <span className="event-copy">
-                  <span className="event-meta"><b>{GROUP_NAMES[event.group] ?? event.group}</b>{event.tool ? <code>{event.tool}</code> : <em>내부 처리</em>}</span>
+                  <span className="event-meta"><b>{GROUP_NAMES[event.group] ?? event.group}</b>{event.tool ? <><code>{event.tool}</code>{event.origin === "codex" ? <em>Codex 중계</em> : null}</> : <em>내부 처리</em>}</span>
                   <strong>{event.label}</strong>
                   {event.message ? <small>{event.message}</small> : null}
                 </span>

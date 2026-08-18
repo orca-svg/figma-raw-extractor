@@ -62,6 +62,7 @@ export function FigmaToolsGuide({ statuses, transport, onTransportChange }: {
 }) {
   const status = statuses[transport];
   const available = new Set((status.tools ?? []).map((tool) => normalize(tool.name)));
+  const hasDiscovery = (status.tools?.length ?? 0) > 0;
   const total = GROUPS.reduce((sum, group) => sum + group.tools.length, 0);
   const known = new Set(GROUPS.flatMap((group) => group.tools.map((tool) => tool.name)));
   const extra = (status.tools ?? []).filter((tool) => !known.has(normalize(tool.name)));
@@ -71,15 +72,15 @@ export function FigmaToolsGuide({ statuses, transport, onTransportChange }: {
       <section className="tools-hero figma-tools-hero">
         <div><p className="eyebrow">Figma MCP tool map</p><h1>캔버스를 읽는<br />도구의 경계를 봅니다.</h1></div>
         <div className="tools-hero-copy">
-          <p>같은 Figma라도 Desktop과 Remote, Design과 FigJam에서 사용할 수 있는 Tool이 다릅니다. 현재 연결에서 실제로 발견한 결과를 정적 지식과 나란히 표시합니다.</p>
+          <p>같은 Figma라도 Desktop, Remote, Codex Bridge와 파일 유형에 따라 Tool 경로가 달라집니다. 현재 연결에서 실제로 발견한 결과를 정적 지식과 나란히 표시합니다.</p>
           <div className="segmented-control tool-transport" role="group" aria-label="도구 연결 방식">
-            {(["desktop", "remote"] as const).map((item) => <button key={item} type="button" className={transport === item ? "active" : ""} onClick={() => onTransportChange(item)}>{item === "desktop" ? "Desktop" : "Remote β"}</button>)}
+            {(["desktop", "remote", "codex"] as const).map((item) => <button key={item} type="button" className={transport === item ? "active" : ""} onClick={() => onTransportChange(item)}>{item === "desktop" ? "Desktop" : item === "remote" ? "Remote β" : "Codex β"}</button>)}
           </div>
-          <dl className="tools-counts"><div><dt>안내 Tool</dt><dd>{total}</dd></div><div><dt>현재 발견</dt><dd>{status.connected ? status.tools?.length ?? 0 : "—"}</dd></div><div><dt>연결</dt><dd>{status.connected ? "준비됨" : "연결 안 됨"}</dd></div></dl>
+          <dl className="tools-counts"><div><dt>안내 Tool</dt><dd>{total}</dd></div><div><dt>현재 발견</dt><dd>{status.connected && (transport !== "codex" || hasDiscovery) ? status.tools?.length ?? 0 : "—"}</dd></div><div><dt>연결</dt><dd>{status.connected ? "준비됨" : "연결 안 됨"}</dd></div></dl>
         </div>
       </section>
 
-      {!status.connected ? <div className="tools-connection-note figma-note"><strong>{transport === "desktop" ? "Figma Desktop MCP를 켜면 실제 가용 상태가 표시됩니다." : "Remote OAuth 연결 뒤 실제 Tool 범위를 확인할 수 있습니다."}</strong><span>{status.message}</span></div> : null}
+      {!status.connected ? <div className="tools-connection-note figma-note"><strong>{transport === "desktop" ? "Figma Desktop MCP를 켜면 실제 가용 상태가 표시됩니다." : transport === "remote" ? "Remote OAuth 연결 뒤 실제 Tool 범위를 확인할 수 있습니다." : "Codex 계정과 Codex의 Figma OAuth를 연결해 주세요."}</strong><span>{status.message}</span></div> : null}
 
       <div className="tool-groups">
         {GROUPS.map((group) => (
@@ -87,13 +88,13 @@ export function FigmaToolsGuide({ statuses, transport, onTransportChange }: {
             <header><div><span>{group.label}</span><b>{String(group.tools.length).padStart(2, "0")} tools</b></div><p>{group.summary}</p></header>
             <div className="tool-card-grid">
               {group.tools.map((tool) => {
-                const supportedHere = tool.availability === "both" || transport === "remote";
+                const supportedHere = tool.availability === "both" || transport !== "desktop";
                 const found = available.has(tool.name);
                 return (
                   <article className="tool-card" key={tool.name}>
-                    <div className="tool-card-top"><code>{tool.name}</code>{status.connected ? <span className={`tool-access ${found ? "available" : "blocked"}`}>{found ? "발견됨" : "없음"}</span> : null}</div>
+                    <div className="tool-card-top"><code>{tool.name}</code>{status.connected && (transport !== "codex" || hasDiscovery) ? <span className={`tool-access ${found ? "available" : "blocked"}`}>{found ? "발견됨" : "없음"}</span> : null}</div>
                     <h2>{tool.title}</h2><p>{tool.description}</p>
-                    <div className="tool-chips"><span>{tool.files}</span><span>{tool.availability === "remote" ? "Remote" : "Desktop · Remote"}</span><span className={tool.used ? "used" : "guide-only"}>{tool.used ? "추출 경로" : "안내만"}</span></div>
+                    <div className="tool-chips"><span>{tool.files}</span><span>{tool.availability === "remote" ? "Remote · Codex" : "Desktop · Remote · Codex"}</span><span className={tool.used ? "used" : "guide-only"}>{tool.used ? "추출 경로" : "안내만"}</span></div>
                     {!supportedHere ? <small className="tool-unavailable">현재 연결 방식에서는 제공되지 않습니다.</small> : null}
                   </article>
                 );
@@ -104,7 +105,7 @@ export function FigmaToolsGuide({ statuses, transport, onTransportChange }: {
         {extra.length ? <section className="tool-group discovered"><header><div><span>추가로 발견됨</span><b>{String(extra.length).padStart(2, "0")} tools</b></div><p>정적 카탈로그보다 현재 MCP 서버가 새로 제공하는 Tool입니다.</p></header><div className="tool-card-grid">{extra.map((tool) => <article className="tool-card" key={tool.name}><div className="tool-card-top"><code>{tool.name}</code><span className="tool-access available">발견됨</span></div><h2>새 MCP Tool</h2><p>{tool.description ?? "현재 서버가 반환한 설명이 없습니다."}</p></article>)}</div></section> : null}
       </div>
 
-      <aside className="safety-note figma-safety"><span>Read only</span><strong>추출 페이지는 캔버스를 바꾸지 않습니다.</strong><p>`use_figma`, 파일 생성, 업로드, Code Connect 쓰기 Tool은 안내만 하며 실행 경로에서 호출하지 않습니다.</p></aside>
+      <aside className="safety-note figma-safety"><span>Read only</span><strong>추출 페이지는 캔버스를 바꾸지 않습니다.</strong><p>`use_figma`, 파일 생성, 업로드, Code Connect 쓰기 Tool은 안내만 하며 실행 경로에서 호출하지 않습니다. Codex 모드는 중계된 JSONL 이벤트로 표시됩니다.</p></aside>
     </main>
   );
 }

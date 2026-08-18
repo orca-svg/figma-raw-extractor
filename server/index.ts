@@ -8,6 +8,14 @@ import { runExtraction, extractIdentity, parseToolResult, resolveTool } from "./
 import { FigmaDemoAdapter, FIGMA_DEMO_TARGET } from "./figma-demo-adapter.js";
 import { runFigmaExtraction } from "./figma-extract.js";
 import {
+  cancelCodexAuth,
+  createCodexBridgeSession,
+  inspectCodexBridge,
+  runCodexFigmaExtraction,
+  startCodexAccountLogin,
+  startCodexFigmaLogin,
+} from "./codex-figma-bridge.js";
+import {
   beginFigmaRemoteOAuth,
   connectToFigmaDesktop,
   connectToFigmaRemote,
@@ -42,6 +50,7 @@ import type {
   FigmaRunRecord,
   McpAdapter,
   NotionExtractionInput,
+  CodexBridgeSession,
 } from "./types.js";
 
 type NotionSession = {
@@ -60,6 +69,7 @@ type NotionSession = {
 
 type FigmaSession = {
   oauth: FigmaOAuthSession;
+  codex: CodexBridgeSession;
   runs: Map<string, FigmaRunRecord>;
 };
 
@@ -95,7 +105,7 @@ function createSession(): Session {
   return {
     id: randomUUID(),
     notion: {},
-    figma: { oauth: createFigmaOAuthSession(), runs: new Map() },
+    figma: { oauth: createFigmaOAuthSession(), codex: createCodexBridgeSession(), runs: new Map() },
   };
 }
 
@@ -324,8 +334,9 @@ app.post(["/api/notion/extract/stream", "/api/extract/stream"], notionExtract);
 
 app.get("/api/figma/status", async (req, res) => {
   const session = getSession(req, res).figma;
-  const transport = req.query.transport === "remote" ? "remote" : "desktop";
+  const transport = req.query.transport === "remote" ? "remote" : req.query.transport === "codex" ? "codex" : "desktop";
   cleanupRuns(session.runs);
+  if (transport === "codex") return res.json(await inspectCodexBridge(session.codex));
   let adapter: McpAdapter | undefined;
   try {
     if (transport === "remote" && !session.oauth.tokens) {
@@ -346,6 +357,29 @@ app.get("/api/figma/status", async (req, res) => {
   } finally {
     await adapter?.close().catch(() => undefined);
   }
+});
+
+app.post("/api/figma/codex/auth/start", async (req, res, next) => {
+  try {
+    const session = getSession(req, res).figma;
+    return res.json({ flow: await startCodexAccountLogin(session.codex) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/figma/codex/figma/start", async (req, res, next) => {
+  try {
+    const session = getSession(req, res).figma;
+    return res.json({ flow: await startCodexFigmaLogin(session.codex) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/figma/codex/auth/cancel", (req, res) => {
+  cancelCodexAuth(getSession(req, res).figma.codex);
+  res.status(204).end();
 });
 
 app.post("/api/figma/auth/start", async (req, res) => {
@@ -388,7 +422,7 @@ app.post("/api/figma/extract/stream", async (req, res) => {
   const session = rootSession.figma;
   const body = req.body as Partial<FigmaExtractionInput>;
   const mode = body.mode === "demo" ? "demo" : "live";
-  const transport = body.transport === "remote" ? "remote" : "desktop";
+  const transport = body.transport === "remote" ? "remote" : body.transport === "codex" ? "codex" : "desktop";
   const targetMode = body.targetMode === "selection" ? "selection" : "link";
   const input: FigmaExtractionInput = {
     target: mode === "demo" ? FIGMA_DEMO_TARGET : typeof body.target === "string" ? body.target.trim() : "",
@@ -408,6 +442,10 @@ app.post("/api/figma/extract/stream", async (req, res) => {
   if (mode === "live" && input.targetMode === "link" && !input.target) return res.status(400).json({ message: "Figma 노드 링크를 입력해 주세요." });
   if (mode === "live" && input.targetMode === "selection" && transport !== "desktop") return res.status(400).json({ message: "현재 선택은 Desktop MCP에서만 사용할 수 있습니다." });
   if (mode === "live" && transport === "remote" && !session.oauth.tokens) return res.status(401).json({ message: "Figma Remote를 먼저 연결해 주세요." });
+  if (mode === "live" && transport === "codex") {
+    const status = await inspectCodexBridge(session.codex);
+    if (!status.connected) return res.status(401).json({ message: status.message ?? "Codex Bridge를 먼저 연결해 주세요." });
+  }
 
   const run = createFigmaRun(rootSession.id, input);
   addRunToSession(session.runs, run);
@@ -423,13 +461,19 @@ app.post("/api/figma/extract/stream", async (req, res) => {
   };
 
   let adapter: McpAdapter | undefined;
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
   try {
-    adapter = mode === "demo"
-      ? new FigmaDemoAdapter()
-      : transport === "remote"
-        ? await connectToFigmaRemote(session.oauth, FIGMA_CALLBACK_URL)
-        : await connectToFigmaDesktop();
-    await runFigmaExtraction(adapter, input, run, write);
+    if (mode === "live" && transport === "codex") {
+      await runCodexFigmaExtraction(session.codex, input, run, write, controller.signal);
+    } else {
+      adapter = mode === "demo"
+        ? new FigmaDemoAdapter()
+        : transport === "remote"
+          ? await connectToFigmaRemote(session.oauth, FIGMA_CALLBACK_URL)
+          : await connectToFigmaDesktop();
+      await runFigmaExtraction(adapter, input, run, write);
+    }
   } catch (error) {
     const event: ExtractionEvent = {
       type: "fatal",

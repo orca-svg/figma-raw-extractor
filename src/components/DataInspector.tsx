@@ -33,13 +33,33 @@ function JsonBlock({ value }: { value: unknown }) {
   );
 }
 
+function figmaPreviewUrls(value: unknown): string[] {
+  let corpus = "";
+  try { corpus = JSON.stringify(value); } catch { return []; }
+  const matches = corpus.match(/https:\/\/[^\s"'<>\\]+/g) ?? [];
+  const urls: string[] = [];
+  for (const raw of matches) {
+    try {
+      const normalized = raw.replace(/\\n.*$/, "").replace(/[),.;\\]+$/, "");
+      const url = new URL(normalized);
+      if (url.protocol !== "https:" || !(url.hostname === "figma.com" || url.hostname.endsWith(".figma.com"))) continue;
+      if (!/\/api\/mcp\/asset\//.test(url.pathname) || !/\.(?:png|jpe?g|webp|gif|svg)$/i.test(url.pathname)) continue;
+      if (!urls.includes(url.href)) urls.push(url.href);
+    } catch {
+      // Ignore malformed URLs embedded in arbitrary Tool text.
+    }
+  }
+  return urls.slice(0, 20);
+}
+
 function VisualArtifacts({ event }: { event: ExtractionEvent }) {
-  if (!event.artifacts?.length || !event.runId) {
+  const remoteUrls = event.artifacts?.length ? [] : figmaPreviewUrls(event.response);
+  if ((!event.artifacts?.length || !event.runId) && !remoteUrls.length) {
     return <div className="visual-empty"><span aria-hidden="true">◇</span><p>이 호출에는 저장된 시각 자료가 없습니다.</p></div>;
   }
   return (
     <div className="artifact-grid">
-      {event.artifacts.map((artifact) => {
+      {event.artifacts?.map((artifact) => {
         const href = `/api/figma/runs/${encodeURIComponent(event.runId!)}/artifacts/${encodeURIComponent(artifact.id)}`;
         return (
           <figure className="artifact-card" key={artifact.id}>
@@ -49,6 +69,13 @@ function VisualArtifacts({ event }: { event: ExtractionEvent }) {
           </figure>
         );
       })}
+      {remoteUrls.map((href, index) => (
+        <figure className="artifact-card" key={href}>
+          <img src={href} alt={`${event.label}에서 추출한 임시 Figma 미리보기 ${index + 1}`} />
+          <figcaption><span>Figma short-lived preview</span><b>임시 URL</b></figcaption>
+          <a href={href} target="_blank" rel="noreferrer">원본 열기 ↗</a>
+        </figure>
+      ))}
     </div>
   );
 }
@@ -62,17 +89,18 @@ export function DataInspector({ event }: { event?: ExtractionEvent }) {
       <aside className="inspector empty-inspector">
         <p className="eyebrow">Raw inspector</p>
         <h2>호출을 선택하세요</h2>
-        <p>실행 기록에서 한 단계를 누르면 MCP가 받은 입력과 반환한 원문을 그대로 볼 수 있습니다.</p>
+        <p>실행 기록에서 한 단계를 누르면 MCP 또는 Codex 중계 이벤트의 입력과 반환값을 볼 수 있습니다.</p>
       </aside>
     );
   }
 
   const value = tab === "response" ? event.response ?? event.message : tab === "request" ? event.request : event.extracted ?? event.message;
+  const visualCount = (event.artifacts?.length ?? 0) || figmaPreviewUrls(event.response).length;
   return (
     <aside className="inspector" aria-labelledby="inspector-title">
       <div className="inspector-head">
         <div>
-          <p className="eyebrow">Raw response · {String(event.order).padStart(2, "0")}</p>
+          <p className="eyebrow">{event.origin === "codex" ? "Codex event" : "Raw response"} · {String(event.order).padStart(2, "0")}</p>
           <h2 id="inspector-title">{event.label}</h2>
         </div>
         <span className={`state-label ${event.state}`}>{event.state}</span>
@@ -80,7 +108,7 @@ export function DataInspector({ event }: { event?: ExtractionEvent }) {
       <div className="tabs" role="tablist" aria-label="응답 보기 방식">
         {(["response", "request", "extracted", "visual"] as const).map((name) => (
           <button key={name} type="button" role="tab" aria-selected={tab === name} className={tab === name ? "active" : ""} onClick={() => setTab(name)}>
-            {name === "response" ? "원시 응답" : name === "request" ? "MCP 입력" : name === "extracted" ? "추출 메타" : `시각 자료${event.artifacts?.length ? ` ${event.artifacts.length}` : ""}`}
+            {name === "response" ? event.origin === "codex" ? "중계 응답" : "원시 응답" : name === "request" ? event.origin === "codex" ? "Tool 입력" : "MCP 입력" : name === "extracted" ? "추출 메타" : `시각 자료${visualCount ? ` ${visualCount}` : ""}`}
           </button>
         ))}
       </div>
@@ -88,7 +116,7 @@ export function DataInspector({ event }: { event?: ExtractionEvent }) {
         {tab === "visual" ? <VisualArtifacts event={event} /> : <JsonBlock value={value} />}
       </div>
       <dl className="call-facts">
-        <div><dt>도구</dt><dd>{event.tool ?? "내부 처리"}</dd></div>
+        <div><dt>도구</dt><dd>{event.tool ? `${event.origin === "codex" ? "Codex · " : ""}${event.tool}` : "내부 처리"}</dd></div>
         <div><dt>시작</dt><dd>{new Date(event.startedAt).toLocaleTimeString("ko-KR")}</dd></div>
         <div><dt>소요</dt><dd>{typeof event.elapsedMs === "number" ? `${event.elapsedMs}ms` : "—"}</dd></div>
         <div><dt>응답</dt><dd>{formatBytes(event.responseBytes)}</dd></div>

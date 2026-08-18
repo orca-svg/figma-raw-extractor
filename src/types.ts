@@ -26,7 +26,7 @@ export type ExtractionEvent = {
   message?: string;
   provider?: Provider;
   runId?: string;
-  origin?: "mcp" | "internal";
+  origin?: "mcp" | "internal" | "codex";
   responseBytes?: number;
   artifacts?: ArtifactRef[];
 };
@@ -62,7 +62,16 @@ export type ToolDescriptor = {
   inputSchema?: unknown;
 };
 
-export type FigmaTransport = "desktop" | "remote";
+export type FigmaTransport = "desktop" | "remote" | "codex";
+
+export type CodexAuthFlow = {
+  kind: "codex" | "figma";
+  state: "waiting" | "complete" | "error";
+  authUrl?: string;
+  userCode?: string;
+  message?: string;
+  startedAt: number;
+};
 
 export type FigmaConnectionStatus = {
   connected: boolean;
@@ -71,6 +80,9 @@ export type FigmaConnectionStatus = {
   tools?: ToolDescriptor[];
   identity?: unknown;
   message?: string;
+  codex?: { installed: boolean; version?: string; authenticated: boolean };
+  figmaMcp?: { configured: boolean; enabled: boolean; authenticated: boolean; authStatus?: string; url?: string };
+  authFlow?: CodexAuthFlow;
 };
 
 export type FigmaExtractionOptions = {

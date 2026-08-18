@@ -21,6 +21,25 @@ export type FigmaOAuthSession = {
   authorizationUrl?: string;
 };
 
+export function createFigmaOAuthClientMetadata(callbackUrl: string): OAuthClientMetadata {
+  return {
+    client_name: "MCP Trace Studio",
+    redirect_uris: [callbackUrl],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "client_secret_basic",
+    scope: "mcp:connect",
+  };
+}
+
+export function describeFigmaOAuthStartError(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (/HTTP 403|Forbidden/i.test(detail)) {
+    return "Figma가 MCP Trace Studio의 OAuth 클라이언트 등록을 허용하지 않았습니다. Figma MCP Catalog 등록 또는 클라이언트 승인이 필요합니다.";
+  }
+  return `Figma Remote OAuth를 시작하지 못했습니다. ${detail}`;
+}
+
 class FigmaSessionOAuthProvider implements OAuthClientProvider {
   constructor(
     private readonly session: FigmaOAuthSession,
@@ -32,14 +51,7 @@ class FigmaSessionOAuthProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
-    return {
-      client_name: "MCP Trace Studio",
-      client_uri: this.callbackUrl.replace(/\/api\/figma\/auth\/callback$/, ""),
-      redirect_uris: [this.callbackUrl],
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-      token_endpoint_auth_method: "none",
-    };
+    return createFigmaOAuthClientMetadata(this.callbackUrl);
   }
 
   state(): string {
@@ -143,7 +155,7 @@ export async function beginFigmaRemoteOAuth(session: FigmaOAuthSession, callback
   } catch (error) {
     await client.close().catch(() => undefined);
     if (!(error instanceof UnauthorizedError) || !session.authorizationUrl) {
-      throw new Error(`Figma Remote OAuth를 시작하지 못했습니다. ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(describeFigmaOAuthStartError(error));
     }
     return session.authorizationUrl;
   }
