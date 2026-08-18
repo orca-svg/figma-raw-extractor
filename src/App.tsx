@@ -2,11 +2,14 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState, typ
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   connectPat,
+  cancelCodexAuth,
   disconnect,
   disconnectFigmaRemote,
   getFigmaStatus,
   getStatus,
   startFigmaOAuth,
+  startCodexFigmaOAuth,
+  startCodexLogin,
   startOAuth,
   streamExtraction,
   streamFigmaExtraction,
@@ -57,6 +60,24 @@ const INITIAL_FIGMA_OPTIONS: FigmaExtractionOptions = {
   codeConnectLabel: "",
   mode: "live",
 };
+const FIGMA_SESSION_KEY = "mcp-trace-studio:figma-options";
+
+function initialFigmaOptions(): FigmaExtractionOptions {
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(FIGMA_SESSION_KEY) ?? "null") as Partial<FigmaExtractionOptions> | null;
+    const transport: FigmaTransport = saved?.transport === "remote" || saved?.transport === "codex" ? saved.transport : "desktop";
+    return {
+      ...INITIAL_FIGMA_OPTIONS,
+      ...saved,
+      transport,
+      targetMode: transport === "desktop" && saved?.targetMode === "selection" ? "selection" : "link",
+      target: typeof saved?.target === "string" ? saved.target : "",
+      mode: "live",
+    };
+  } catch {
+    return INITIAL_FIGMA_OPTIONS;
+  }
+}
 
 type Route = { provider: Provider; view: AppView };
 
@@ -131,11 +152,12 @@ export default function App() {
   const [figmaStatuses, setFigmaStatuses] = useState<Record<FigmaTransport, FigmaConnectionStatus>>({
     desktop: { connected: false, transport: "desktop" },
     remote: { connected: false, transport: "remote", beta: true },
+    codex: { connected: false, transport: "codex", beta: true },
   });
   const [statusLoading, setStatusLoading] = useState(true);
   const [expectedEmail, setExpectedEmail] = useState("");
   const [notionOptions, setNotionOptions] = useState(INITIAL_NOTION_OPTIONS);
-  const [figmaOptions, setFigmaOptions] = useState(INITIAL_FIGMA_OPTIONS);
+  const [figmaOptions, setFigmaOptions] = useState(initialFigmaOptions);
   const [notionEvents, setNotionEvents] = useState<ExtractionEvent[]>([]);
   const [figmaEvents, setFigmaEvents] = useState<ExtractionEvent[]>([]);
   const [notionSelectedId, setNotionSelectedId] = useState<string>();
@@ -164,10 +186,20 @@ export default function App() {
 
   useEffect(() => {
     setStatusLoading(true);
-    void Promise.all([refreshNotion(), refreshFigma("desktop"), refreshFigma("remote")]).finally(() => setStatusLoading(false));
+    void Promise.all([refreshNotion(), refreshFigma("desktop"), refreshFigma("remote"), refreshFigma("codex")]).finally(() => setStatusLoading(false));
     const params = new URLSearchParams(window.location.search);
     if (params.has("auth")) window.history.replaceState({}, "", window.location.pathname);
   }, [refreshFigma, refreshNotion]);
+
+  useEffect(() => {
+    window.sessionStorage.setItem(FIGMA_SESSION_KEY, JSON.stringify({ ...figmaOptions, mode: "live" }));
+  }, [figmaOptions]);
+
+  useEffect(() => {
+    if (figmaStatuses.codex.authFlow?.state !== "waiting") return;
+    const timer = window.setInterval(() => void refreshFigma("codex"), 2_000);
+    return () => window.clearInterval(timer);
+  }, [figmaStatuses.codex.authFlow?.state, refreshFigma]);
 
   useEffect(() => {
     const onPopState = () => startTransition(() => setRoute(routeFromPath()));
@@ -218,7 +250,10 @@ export default function App() {
     } catch (error) {
       if (!controller.signal.aborted) setFigmaError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (!controller.signal.aborted) setFigmaRunning(false);
+      if (!controller.signal.aborted) {
+        setFigmaRunning(false);
+        if (figmaOptions.transport === "codex") void refreshFigma("codex");
+      }
     }
   };
 
@@ -226,15 +261,15 @@ export default function App() {
     setFigmaOptions((current) => ({
       ...current,
       transport,
-      targetMode: transport === "remote" && current.targetMode === "selection" ? "link" : current.targetMode,
-      includeLibraries: transport === "remote" ? current.includeLibraries : false,
-      includeAssets: transport === "remote" ? current.includeAssets : false,
+      targetMode: transport !== "desktop" && current.targetMode === "selection" ? "link" : current.targetMode,
+      includeLibraries: transport !== "desktop" ? current.includeLibraries : false,
+      includeAssets: transport !== "desktop" ? current.includeAssets : false,
     }));
   };
 
   const activeFigmaStatus = figmaStatuses[figmaOptions.transport];
   const activeConnected = route.provider === "notion" ? notionStatus.connected : activeFigmaStatus.connected;
-  const connectionCopy = statusLoading ? "연결 확인 중" : activeConnected ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : `${figmaOptions.transport === "desktop" ? "Desktop" : "Remote"} 준비됨` : "연결 안 됨";
+  const connectionCopy = statusLoading ? "연결 확인 중" : activeConnected ? route.provider === "notion" ? `${notionStatus.identity?.workspace?.name ?? "Notion"} 연결됨` : `${figmaOptions.transport === "desktop" ? "Desktop" : figmaOptions.transport === "remote" ? "Remote" : "Codex"} 준비됨` : "연결 안 됨";
   const motionProps = reducedMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0.16 } }
     : { initial: { opacity: 0, x: route.provider === "figma" ? 18 : -18, filter: "blur(6px)" }, animate: { opacity: 1, x: 0, filter: "blur(0px)" }, exit: { opacity: 0, x: route.provider === "figma" ? -18 : 18, filter: "blur(5px)" }, transition: { type: "spring" as const, bounce: 0, duration: 0.38 } };
@@ -281,7 +316,7 @@ export default function App() {
               {figmaComplete?.runId ? <ExportActions runId={figmaComplete.runId} /> : null}
               {figmaError ? <div className="page-error" role="alert">{figmaError}</div> : null}
               <main className="workspace figma-workspace">
-                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} running={figmaRunning} connected={activeFigmaStatus.connected} /></aside>
+                <aside className="setup-column"><FigmaConnectionPanel statuses={figmaStatuses} transport={figmaOptions.transport} onTransportChange={changeFigmaTransport} onRefresh={refreshFigma} onOAuth={async () => window.location.assign(await startFigmaOAuth())} onDisconnect={async () => { await disconnectFigmaRemote(); await refreshFigma("remote"); setFigmaEvents([]); }} onCodexLogin={startCodexLogin} onCodexFigmaOAuth={startCodexFigmaOAuth} onCodexCancel={cancelCodexAuth} busy={figmaRunning || statusLoading} /><FigmaTargetPanel options={figmaOptions} onChange={setFigmaOptions} onRun={(mode) => void runFigma(mode)} running={figmaRunning} connected={activeFigmaStatus.connected} /></aside>
                 <ExtractionTimeline events={figmaEvents} selectedId={figmaSelected?.id} onSelect={(event) => setFigmaSelectedId(event.id)} running={figmaRunning} provider="figma" />
                 <DataInspector event={figmaSelected} />
               </main>

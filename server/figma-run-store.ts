@@ -112,7 +112,9 @@ export function buildFigmaRunZip(run: FigmaRunRecord): Uint8Array {
       `- Target mode: ${run.input.targetMode}`,
       `- Detected type: ${run.detectedFileType ?? "unknown"}`,
       "",
-      "이 번들은 AI 해석이나 코드 생성을 포함하지 않습니다. trace.ndjson과 responses의 값은 실제 MCP 호출 기록입니다.",
+      run.input.transport === "codex"
+        ? "이 번들은 Codex가 중계한 JSONL Tool 이벤트입니다. 직접 MCP content block 원문이 아니며, AI 실행 경로를 포함합니다."
+        : "이 번들은 AI 해석이나 코드 생성을 포함하지 않습니다. trace.ndjson과 responses의 값은 실제 MCP 호출 기록입니다.",
     ].join("\n")),
   };
 

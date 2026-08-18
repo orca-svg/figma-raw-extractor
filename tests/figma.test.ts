@@ -1,10 +1,12 @@
 import { unzipSync, strFromU8 } from "fflate";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { FigmaDemoAdapter, FIGMA_DEMO_TARGET } from "../server/figma-demo-adapter.js";
 import { runFigmaExtraction } from "../server/figma-extract.js";
+import { createFigmaOAuthClientMetadata, createFigmaOAuthSession, describeFigmaOAuthStartError } from "../server/figma-mcp-client.js";
 import { buildFigmaRunZip, createFigmaRun, upsertRunEvent } from "../server/figma-run-store.js";
 import { parseFigmaTarget } from "../server/figma-target.js";
+import { buildCodexExecArgs, captureCodexResponse, parseCodexFigmaItem } from "../server/codex-figma-bridge.js";
 import type { ExtractionEvent, FigmaExtractionInput, McpAdapter, ToolDescriptor } from "../server/types.js";
 
 const baseInput: FigmaExtractionInput = {
@@ -21,6 +23,35 @@ const baseInput: FigmaExtractionInput = {
   mode: "demo",
 };
 
+afterEach(() => vi.unstubAllGlobals());
+
+describe("Figma Remote OAuth", () => {
+  it("Figma가 지원하는 confidential client 방식과 MCP scope를 요청한다", () => {
+    const callbackUrl = "http://127.0.0.1:8787/api/figma/auth/callback";
+    expect(createFigmaOAuthClientMetadata(callbackUrl)).toEqual({
+      client_name: "MCP Trace Studio",
+      redirect_uris: [callbackUrl],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "client_secret_basic",
+      scope: "mcp:connect",
+    });
+  });
+
+  it("OAuth 세션마다 예측할 수 없는 state를 생성한다", () => {
+    const first = createFigmaOAuthSession();
+    const second = createFigmaOAuthSession();
+    expect(first.state).toMatch(/^[a-f0-9]{64}$/);
+    expect(second.state).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.state).not.toBe(second.state);
+  });
+
+  it("미승인 클라이언트의 403을 사용자가 조치할 수 있는 메시지로 바꾼다", () => {
+    expect(describeFigmaOAuthStartError(new Error("HTTP 403: Forbidden"))).toMatch(/Catalog.*승인/);
+    expect(describeFigmaOAuthStartError(new Error("network timeout"))).toContain("network timeout");
+  });
+});
+
 describe("Figma target parser", () => {
   it("Design, branch, FigJam 링크를 file key와 node id로 정규화한다", () => {
     expect(parseFigmaTarget("https://www.figma.com/design/abc/File?node-id=12-34")).toMatchObject({ fileKey: "abc", nodeId: "12:34", fileType: "design" });
@@ -31,6 +62,50 @@ describe("Figma target parser", () => {
   it("파일 전체 링크와 지원하지 않는 유형을 거부한다", () => {
     expect(() => parseFigmaTarget("https://figma.com/design/abc/File")).toThrow(/node-id/);
     expect(() => parseFigmaTarget("https://figma.com/slides/abc/Deck?node-id=1-2")).toThrow(/지원하지/);
+  });
+});
+
+describe("Codex Figma bridge event parser", () => {
+  it("plugin MCP transport를 불완전한 config override로 덮어쓰지 않는다", () => {
+    const args = buildCodexExecArgs({ ...baseInput, transport: "codex", mode: "live" });
+    expect(args.some((value) => value.includes("mcp_servers.figma"))).toBe(false);
+    expect(args).toContain("--json");
+    expect(args).toContain("read-only");
+  });
+
+  it("Codex JSONL의 Figma MCP 시작·완료 이벤트만 추출한다", () => {
+    const started = parseCodexFigmaItem({
+      type: "item.started",
+      item: { id: "call-1", type: "mcp_tool_call", server: "figma", tool: "get_screenshot", arguments: { nodeId: "1:2" } },
+    });
+    const completed = parseCodexFigmaItem({
+      type: "item.completed",
+      item: { id: "call-1", type: "mcp_tool_call", server: "figma", tool: "get_screenshot", result: { content: [{ type: "text", text: "ok" }] }, status: "completed" },
+    });
+    expect(started).toMatchObject({ phase: "started", tool: "get_screenshot", state: "running", request: { nodeId: "1:2" } });
+    expect(completed).toMatchObject({ phase: "completed", tool: "get_screenshot", state: "success" });
+    expect(parseCodexFigmaItem({ type: "item.completed", item: { id: "x", type: "mcp_tool_call", server: "notion", tool: "fetch" } })).toBeUndefined();
+  });
+
+  it("namespace형 Tool 이름과 오류를 정규화한다", () => {
+    expect(parseCodexFigmaItem({
+      type: "item.completed",
+      item: { id: "call-2", type: "mcp_tool_call", name: "mcp__figma__get_design_context", error: "forbidden" },
+    })).toMatchObject({ tool: "get_design_context", state: "error", message: "forbidden" });
+  });
+
+  it("Codex 텍스트 응답의 Figma screenshot URL을 artifact로 저장한다", async () => {
+    const run = createFigmaRun("codex-session", { ...baseInput, transport: "codex", mode: "live" });
+    const fetchMock = vi.fn(async () => new Response(Uint8Array.from([137, 80, 78, 71]), { headers: { "Content-Type": "image/png" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const response = {
+      content: [{ type: "text", text: JSON.stringify({ image_url: "https://www.figma.com/api/mcp/asset/example.png", width: 100, height: 200 }) }],
+    };
+    const captured = await captureCodexResponse(response, run, 5, "get_screenshot");
+    expect(fetchMock).toHaveBeenCalledWith("https://www.figma.com/api/mcp/asset/example.png", expect.objectContaining({ redirect: "follow" }));
+    expect(captured.artifacts).toHaveLength(1);
+    expect(captured.artifacts[0]).toMatchObject({ kind: "screenshot", mimeType: "image/png", bytes: 4 });
+    expect(run.artifacts.size).toBe(1);
   });
 });
 

@@ -63,13 +63,17 @@ export function FigmaTargetPanel({ options, onChange, onRun, running, connected 
           <Toggle checked={options.includeVariables} onChange={(value) => patch({ includeVariables: value })}>변수와 스타일</Toggle>
           <Toggle checked={options.includeCodeConnect} onChange={(value) => patch({ includeCodeConnect: value })}>Code Connect</Toggle>
           <Toggle checked={options.includeMotion} onChange={(value) => patch({ includeMotion: value })}>하위 모션</Toggle>
-          <Toggle checked={options.includeLibraries} disabled={options.transport !== "remote"} onChange={(value) => patch({ includeLibraries: value })}>Remote 라이브러리</Toggle>
-          <Toggle checked={options.includeAssets} disabled={options.transport !== "remote"} onChange={(value) => patch({ includeAssets: value })}>Remote 자산 다운로드</Toggle>
+          <Toggle checked={options.includeLibraries} disabled={options.transport === "desktop"} onChange={(value) => patch({ includeLibraries: value })}>Remote/Codex 라이브러리</Toggle>
+          <Toggle checked={options.includeAssets} disabled={options.transport === "desktop"} onChange={(value) => patch({ includeAssets: value })}>Remote/Codex 자산 다운로드</Toggle>
         </div>
       </details>
 
+      {connected && options.targetMode === "link" && !options.target ? (
+        <p className="run-blocker-note" role="status"><strong>연결은 완료됐습니다.</strong> Figma에서 추출할 프레임이나 레이어를 선택해 링크를 복사한 뒤 위 입력란에 붙여넣으세요.</p>
+      ) : null}
+
       <button className="primary-button figma-primary full" type="button" onClick={() => onRun("live")} disabled={!canRun || running}>
-        {running ? "Tool 호출 추적 중" : connected ? "실제 Figma MCP로 읽기" : `${options.transport === "desktop" ? "Desktop" : "Remote"} 연결을 확인하세요`}
+        {running ? "Tool 호출 추적 중" : connected ? options.transport === "codex" ? "Codex를 통해 읽기" : "실제 Figma MCP로 읽기" : `${options.transport === "desktop" ? "Desktop" : options.transport === "remote" ? "Remote" : "Codex"} 연결을 확인하세요`}
       </button>
       <button className="demo-button figma-demo full" type="button" onClick={() => onRun("demo")} disabled={running}>Design 예제로 전체 여정 보기</button>
       <p className="demo-note">예제는 합성 Design 응답이며 FigJam 예제는 제공하지 않습니다.</p>

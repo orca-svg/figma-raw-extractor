@@ -8,8 +8,8 @@ Notion과 Figma MCP가 실제로 호출한 Tool의 입력, 원시 응답, 소요
 
 - `/notion`: Notion 계정 연결, 페이지·데이터베이스 추출 타임라인
 - `/notion/tools`: Notion MCP Tool 지도와 워크스페이스별 가용 상태
-- `/figma`: Figma Desktop/Remote 연결, Design·FigJam 노드 추출 타임라인
-- `/figma/tools`: Desktop/Remote 및 파일 유형별 Figma MCP Tool 지도
+- `/figma`: Figma Desktop/Remote/Codex Bridge 연결, Design·FigJam 노드 추출 타임라인
+- `/figma/tools`: Desktop/Remote/Codex 및 파일 유형별 Figma MCP Tool 지도
 - `/`와 기존 `/tools`는 각각 `/notion`, `/notion/tools`로 이동합니다.
 
 ## 요구 사항
@@ -18,6 +18,7 @@ Notion과 Figma MCP가 실제로 호출한 Tool의 입력, 원시 응답, 소요
 - npm `10.x` 이상 권장
 - Notion 실제 추출: 접근 가능한 Notion 계정 또는 개인 토큰
 - Figma Desktop 추출: 최신 Figma 데스크톱 앱과 Dev Mode MCP 서버
+- Figma Codex Bridge 추출: 로그인된 Codex Desktop 또는 `codex` CLI와 Codex에 등록된 Figma MCP
 
 ```bash
 nvm use
@@ -76,6 +77,25 @@ Remote는 `https://mcp.figma.com/mcp`의 OAuth 흐름을 사용합니다. Figma�
 
 연결 후 `whoami` Tool이 제공되면 계정·플랜·seat 응답도 추적합니다. Remote는 링크 기반이며 현재 선택 모드는 지원하지 않습니다.
 
+### Codex Bridge beta
+
+Codex Bridge는 Figma가 승인한 Codex의 Figma OAuth 연결을 로컬 `codex` CLI를 통해 사용합니다. 독립 Remote 클라이언트 등록이 거부되는 환경에서 선택할 수 있는 별도 모드입니다.
+
+1. `/figma`에서 `Codex β`를 선택합니다.
+2. Codex 로그인이 필요하면 `Codex 기기 로그인 시작`을 누르고 공식 기기 인증 화면에서 완료합니다.
+3. `Figma OAuth 시작`을 누르고 Figma 공식 승인 화면에서 완료합니다.
+4. Figma 노드 링크를 입력하고 `Codex를 통해 읽기`를 누릅니다.
+
+앱은 Codex 비밀번호, API key, Figma token을 입력받지 않습니다. 인증 URL과 기기 코드만 화면에 표시하며 자격 증명은 Codex가 관리합니다. Codex에 Figma MCP가 없다면 다음 명령으로 추가할 수 있습니다.
+
+```bash
+codex mcp add figma --url https://mcp.figma.com/mcp
+```
+
+이 모드는 직접 MCP 클라이언트가 아닙니다. 읽기 전용 고정 프롬프트로 Codex를 실행하고 `codex exec --json`의 Figma Tool 이벤트를 추적하므로 `origin: "codex"`로 기록합니다. 따라서 직접 MCP content block과 달라질 수 있으며 Codex의 모델·Skill 실행 경로를 포함합니다. Desktop과 독립 Remote 모드는 계속 `origin: "mcp"`인 직접 원시 추적입니다.
+
+Codex의 `get_screenshot`이 짧은 수명의 Figma `image_url`을 반환하면 서버가 즉시 이미지를 내려받아 실행 artifact로 보관합니다. 인스펙터의 `시각 자료` 탭에서 미리볼 수 있으며 ZIP의 `artifacts/screenshots/`에도 포함됩니다. 기존 실행처럼 URL만 남아 있는 동안에는 같은 탭에서 임시 미리보기를 제공합니다.
+
 ### 대상 링크
 
 - Figma Design: `https://www.figma.com/design/<file-key>/...?node-id=1-2`
@@ -126,7 +146,7 @@ Figma Design 예제 모드는 연결 없이 합성 MCP 응답과 screenshot arti
 
 인스펙터는 `원시 응답`을 기본 탭으로 열고 `MCP 입력`, `추출 메타`, `시각 자료`를 함께 제공합니다. 텍스트·JSON·XML content block은 원문을 유지하며 이미지·오디오·resource blob은 base64를 UI에 출력하지 않고 binary artifact로 분리합니다.
 
-요약 값은 노드·변수·매핑·artifact 수, 응답 크기, 잘림과 누락 Tool처럼 결정적으로 계산할 수 있는 정보만 포함합니다. AI 해석, Skill 실행, 코드 생성은 수행하지 않습니다.
+요약 값은 노드·변수·매핑·artifact 수, 응답 크기, 잘림과 누락 Tool처럼 결정적으로 계산할 수 있는 정보만 포함합니다. Desktop과 독립 Remote 모드는 AI 해석, Skill 실행, 코드 생성을 수행하지 않습니다. Codex Bridge는 Codex 중계 실행을 포함하며 UI와 번들에서 직접 MCP 추적과 명확히 구분합니다.
 
 Figma 실행 결과는 전체 JSON으로 복사하거나 ZIP으로 받을 수 있습니다.
 
@@ -155,10 +175,13 @@ Notion:
 
 Figma:
 
-- `GET /api/figma/status?transport=desktop|remote`
+- `GET /api/figma/status?transport=desktop|remote|codex`
 - `POST /api/figma/auth/start`
 - `GET /api/figma/auth/callback`
 - `POST /api/figma/auth/logout`
+- `POST /api/figma/codex/auth/start`
+- `POST /api/figma/codex/figma/start`
+- `POST /api/figma/codex/auth/cancel`
 - `POST /api/figma/extract/stream`
 - `GET /api/figma/runs/:runId`
 - `GET /api/figma/runs/:runId/bundle.zip`
@@ -173,6 +196,8 @@ Figma:
 | `PORT` | `8787` | Express API 포트 |
 | `API_ORIGIN` | `http://127.0.0.1:8787` | OAuth callback과 API 기준 주소 |
 | `APP_ORIGIN` | 개발 `http://127.0.0.1:5173` | OAuth 뒤 돌아올 Web 주소 |
+| `CODEX_BRIDGE_MODEL` | `gpt-5.5` | Codex Bridge에서 사용할 로컬 Codex 모델 |
+| `CODEX_BRIDGE_REASONING` | `low` | Codex Bridge reasoning effort |
 
 ## 검증
 
@@ -184,7 +209,8 @@ npm run build
 
 ## 보안 원칙
 
-- Notion과 Figma의 연결·실행 상태는 서로 독립적으로 관리하며 인증 정보는 서버 세션 메모리에만 저장합니다.
+- Notion과 독립 Figma Remote의 연결·실행 상태는 서로 분리하며 토큰은 서버 세션 메모리에만 저장합니다. Codex Bridge 자격 증명은 앱이 읽거나 저장하지 않고 Codex 자체 인증 저장소가 관리합니다.
 - 실제 추출은 읽기 Tool로 제한합니다.
 - `use_figma`, 업로드, 파일 생성, Code Connect 쓰기 Tool은 호출하지 않습니다.
+- Codex Bridge는 직접 MCP 원문이 아니라 중계 이벤트이므로 번들의 `transport`와 각 이벤트의 `origin`을 확인하세요.
 - 원시 응답에는 비공개 문서와 디자인 정보가 포함될 수 있으므로 ZIP을 외부에 공유하기 전에 확인하세요.
