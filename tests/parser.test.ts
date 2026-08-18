@@ -47,5 +47,6 @@ describe("Notion MCP 응답 파서", () => {
     });
     expect(extractIdentity(result.payload).workspace?.name).toBe("Example Workspace");
     expect(resolveTool([{ name: "fetch" }, { name: "notion-query-data-sources" }], "query_data_sources")).toBe("notion-query-data-sources");
+    expect(resolveTool([{ name: "figma_get_design_context" }], "get_design_context")).toBe("figma_get_design_context");
   });
 });

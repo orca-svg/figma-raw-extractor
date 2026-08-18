@@ -1,10 +1,20 @@
 export type StepState = "running" | "success" | "warning" | "error" | "skipped";
+export type Provider = "notion" | "figma";
+export type AppView = "trace" | "tools";
+
+export type ArtifactRef = {
+  id: string;
+  path: string;
+  mimeType: string;
+  bytes: number;
+  kind: "screenshot" | "asset" | "binary";
+};
 
 export type ExtractionEvent = {
   type: "step" | "complete" | "fatal";
   id: string;
   order: number;
-  group: "connection" | "discovery" | "search" | "target" | "schema" | "view" | "sql" | "page" | "comments" | "summary";
+  group: string;
   label: string;
   state: StepState;
   tool?: string;
@@ -14,6 +24,11 @@ export type ExtractionEvent = {
   response?: unknown;
   extracted?: unknown;
   message?: string;
+  provider?: Provider;
+  runId?: string;
+  origin?: "mcp" | "internal";
+  responseBytes?: number;
+  artifacts?: ArtifactRef[];
 };
 
 export type Identity = {
@@ -39,4 +54,41 @@ export type ExtractionOptions = {
   includeComments: boolean;
   includeTranscript: boolean;
   mode: "live" | "demo";
+};
+
+export type ToolDescriptor = {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+};
+
+export type FigmaTransport = "desktop" | "remote";
+
+export type FigmaConnectionStatus = {
+  connected: boolean;
+  transport: FigmaTransport;
+  beta?: boolean;
+  tools?: ToolDescriptor[];
+  identity?: unknown;
+  message?: string;
+};
+
+export type FigmaExtractionOptions = {
+  target: string;
+  targetMode: "link" | "selection";
+  transport: FigmaTransport;
+  includeVariables: boolean;
+  includeCodeConnect: boolean;
+  includeMotion: boolean;
+  includeLibraries: boolean;
+  includeAssets: boolean;
+  clientFrameworks: string;
+  clientLanguages: string;
+  codeConnectLabel?: string;
+  mode: "live" | "demo";
+};
+
+export type FigmaRunPayload = {
+  manifest: Record<string, unknown>;
+  events: ExtractionEvent[];
 };
