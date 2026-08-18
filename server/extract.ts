@@ -42,7 +42,11 @@ export function parseToolResult(result: CallToolResult): ParsedToolResult {
 }
 
 function normalizeToolName(name: string): string {
-  return name.toLowerCase().replace(/^notion-/, "").replace(/-/g, "_");
+  return name
+    .toLowerCase()
+    .replace(/^mcp__[^_]+__/, "")
+    .replace(/^(?:notion|figma)[-_]/, "")
+    .replace(/-/g, "_");
 }
 
 export function resolveTool(tools: ToolDescriptor[], canonicalName: string): string | undefined {
