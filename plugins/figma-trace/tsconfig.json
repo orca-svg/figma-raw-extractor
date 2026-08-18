@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "None",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["@figma/plugin-typings"],
+    "outFile": "dist/code.js"
+  },
+  "include": ["code.ts"]
+}

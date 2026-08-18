@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Figma</title>
+  <rect width="128" height="128" rx="29" fill="#171717"/>
+  <path d="M43 24h21v26H43a13 13 0 1 1 0-26Z" fill="#F24E1E"/>
+  <path d="M64 24h21a13 13 0 1 1 0 26H64V24Z" fill="#FF7262"/>
+  <path d="M43 50h21v26H43a13 13 0 1 1 0-26Z" fill="#A259FF"/>
+  <circle cx="77" cy="63" r="13" fill="#1ABCFE"/>
+  <path d="M43 76h21v13a13 13 0 1 1-21 0V76Z" fill="#0ACF83"/>
+</svg>

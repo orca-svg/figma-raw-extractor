@@ -1,0 +1,129 @@
+import { createHash, randomBytes } from "node:crypto";
+import type { FigmaRestOAuthSession } from "./types.js";
+
+const FIGMA_API = "https://api.figma.com/v1";
+
+type BrokerTokens = {
+  accessToken: string;
+  expiresIn: number;
+  refreshGrant?: string;
+  userId?: string;
+};
+
+export class FigmaRestApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfter?: number,
+    readonly upgradeUrl?: string,
+  ) {
+    super(message);
+  }
+}
+
+function brokerOrigin(): string {
+  const value = process.env.FIGMA_REST_BROKER_URL?.trim().replace(/\/$/, "");
+  if (!value) throw new Error("FIGMA_REST_BROKER_URL 환경 변수가 필요합니다.");
+  return value;
+}
+
+function sha256Base64Url(value: string): string {
+  return createHash("sha256").update(value).digest("base64url");
+}
+
+async function brokerJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${brokerOrigin()}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await response.text();
+  let payload: unknown;
+  try { payload = text ? JSON.parse(text) : {}; } catch { payload = { message: text }; }
+  if (!response.ok) {
+    const message = payload && typeof payload === "object" && "message" in payload ? String((payload as { message: unknown }).message) : `OAuth broker 요청 실패 (${response.status})`;
+    throw new Error(message);
+  }
+  return payload as T;
+}
+
+export async function beginFigmaRestOAuth(session: FigmaRestOAuthSession): Promise<string> {
+  const codeVerifier = randomBytes(48).toString("base64url");
+  const redeemSecret = randomBytes(32).toString("base64url");
+  const prepared = await brokerJson<{ authUrl: string }>("/api/oauth/prepare", {
+    codeVerifier,
+    redeemSecretHash: sha256Base64Url(redeemSecret),
+  });
+  session.redeemSecret = redeemSecret;
+  session.accessToken = undefined;
+  session.expiresAt = undefined;
+  session.refreshGrant = undefined;
+  session.userId = undefined;
+  return prepared.authUrl;
+}
+
+export async function finishFigmaRestOAuth(session: FigmaRestOAuthSession, ticket: string): Promise<void> {
+  if (!session.redeemSecret) throw new Error("Figma REST OAuth 시작 세션이 없습니다.");
+  const tokens = await brokerJson<BrokerTokens>("/api/oauth/redeem", { ticket, redeemSecret: session.redeemSecret });
+  session.accessToken = tokens.accessToken;
+  session.expiresAt = Date.now() + Math.max(30, tokens.expiresIn) * 1000;
+  session.refreshGrant = tokens.refreshGrant;
+  session.userId = tokens.userId;
+}
+
+export function clearFigmaRestOAuth(session: FigmaRestOAuthSession): void {
+  session.redeemSecret = undefined;
+  session.accessToken = undefined;
+  session.expiresAt = undefined;
+  session.refreshGrant = undefined;
+  session.userId = undefined;
+}
+
+export function figmaRestOAuthStatus(session: FigmaRestOAuthSession) {
+  return { connected: Boolean(session.accessToken || session.refreshGrant), userId: session.userId };
+}
+
+async function ensureAccessToken(session: FigmaRestOAuthSession): Promise<string> {
+  if (session.accessToken && (!session.expiresAt || session.expiresAt - Date.now() > 5 * 60 * 1000)) return session.accessToken;
+  if (!session.refreshGrant || !session.redeemSecret) throw new Error("Figma REST OAuth 연결이 필요합니다.");
+  try {
+    const tokens = await brokerJson<BrokerTokens>("/api/oauth/refresh", {
+      refreshGrant: session.refreshGrant,
+      redeemSecret: session.redeemSecret,
+    });
+    session.accessToken = tokens.accessToken;
+    session.expiresAt = Date.now() + Math.max(30, tokens.expiresIn) * 1000;
+    session.refreshGrant = tokens.refreshGrant ?? session.refreshGrant;
+    session.userId = tokens.userId ?? session.userId;
+    return session.accessToken;
+  } catch (error) {
+    clearFigmaRestOAuth(session);
+    throw error;
+  }
+}
+
+export async function figmaRestJson<T>(session: FigmaRestOAuthSession, path: string, signal?: AbortSignal): Promise<T> {
+  const accessToken = await ensureAccessToken(session);
+  const response = await fetch(`${FIGMA_API}${path}`, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) {
+    if (response.status === 401) clearFigmaRestOAuth(session);
+    const retryAfter = Number(response.headers.get("retry-after")) || undefined;
+    const upgradeUrl = response.headers.get("x-figma-upgrade-link") ?? undefined;
+    const body = await response.text();
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as { message?: string; err?: string };
+      detail = parsed.message ?? parsed.err ?? body;
+    } catch { /* keep text */ }
+    const prefix = response.status === 401 ? "Figma REST 재인증이 필요합니다."
+      : response.status === 403 ? "이 Figma 파일 또는 API scope에 접근할 수 없습니다."
+        : response.status === 429 ? `Figma REST 요청 한도에 도달했습니다.${retryAfter ? ` ${retryAfter}초 뒤 다시 시도해 주세요.` : ""}`
+          : `Figma REST 요청 실패 (${response.status})`;
+    throw new FigmaRestApiError(`${prefix}${detail ? ` ${detail}` : ""}${upgradeUrl ? ` 업그레이드 안내: ${upgradeUrl}` : ""}`, response.status, retryAfter, upgradeUrl);
+  }
+  return response.json() as Promise<T>;
+}

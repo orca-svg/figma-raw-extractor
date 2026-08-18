@@ -6,6 +6,7 @@ import type {
   FigmaConnectionStatus,
   FigmaExtractionOptions,
   FigmaRunPayload,
+  PluginPairing,
   FigmaTransport,
 } from "./types";
 
@@ -100,6 +101,21 @@ export async function disconnectFigmaRemote(): Promise<void> {
   if (!response.ok) throw new Error("Figma Remote 연결 해제에 실패했습니다.");
 }
 
+export async function startPluginPairing(): Promise<PluginPairing> {
+  const response = await fetch("/api/figma/plugin/pair/start", { method: "POST", credentials: "same-origin" });
+  return readJson<PluginPairing>(response);
+}
+
+export async function startFigmaRestOAuth(): Promise<string> {
+  const response = await fetch("/api/figma/rest/auth/start", { method: "POST", credentials: "same-origin" });
+  return (await readJson<{ authUrl: string }>(response)).authUrl;
+}
+
+export async function disconnectFigmaRest(): Promise<void> {
+  const response = await fetch("/api/figma/rest/auth/logout", { method: "POST", credentials: "same-origin" });
+  if (!response.ok) throw new Error("Figma REST 연결 해제에 실패했습니다.");
+}
+
 export async function startCodexLogin(): Promise<CodexAuthFlow> {
   const response = await fetch("/api/figma/codex/auth/start", { method: "POST", credentials: "same-origin" });
   return (await readJson<{ flow: CodexAuthFlow }>(response)).flow;
@@ -121,6 +137,14 @@ export function streamFigmaExtraction(
   signal?: AbortSignal,
 ): Promise<void> {
   return streamNdjson("/api/figma/extract/stream", options, onEvent, signal);
+}
+
+export function streamFigmaQuestion(
+  options: FigmaExtractionOptions & { question: string },
+  onEvent: (event: ExtractionEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamNdjson("/api/figma/questions/stream", options, onEvent, signal);
 }
 
 export async function getFigmaRun(runId: string): Promise<FigmaRunPayload> {

@@ -73,6 +73,13 @@ describe("Codex Figma bridge event parser", () => {
     expect(args).toContain("read-only");
   });
 
+  it("질문 실행은 구조화 출력 schema와 prompt injection 격리를 요구한다", () => {
+    const args = buildCodexExecArgs({ ...baseInput, transport: "codex", mode: "live", question: "이 화면의 제품 의미는?" });
+    expect(args).toContain("--output-schema");
+    expect(args.at(-1)).toContain("untrusted evidence");
+    expect(args.at(-1)).toContain("이 화면의 제품 의미는?");
+  });
+
   it("Codex JSONL의 Figma MCP 시작·완료 이벤트만 추출한다", () => {
     const started = parseCodexFigmaItem({
       type: "item.started",

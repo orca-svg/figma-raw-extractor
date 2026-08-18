@@ -26,7 +26,7 @@ export type ExtractionEvent = {
   message?: string;
   provider?: Provider;
   runId?: string;
-  origin?: "mcp" | "internal" | "codex";
+  origin?: "mcp" | "internal" | "codex" | "plugin" | "rest";
   responseBytes?: number;
   artifacts?: ArtifactRef[];
 };
@@ -62,7 +62,7 @@ export type ToolDescriptor = {
   inputSchema?: unknown;
 };
 
-export type FigmaTransport = "desktop" | "remote" | "codex";
+export type FigmaTransport = "desktop" | "remote" | "codex" | "plugin";
 
 export type CodexAuthFlow = {
   kind: "codex" | "figma";
@@ -83,6 +83,12 @@ export type FigmaConnectionStatus = {
   codex?: { installed: boolean; version?: string; authenticated: boolean };
   figmaMcp?: { configured: boolean; enabled: boolean; authenticated: boolean; authStatus?: string; url?: string };
   authFlow?: CodexAuthFlow;
+  plugin?: {
+    connected: boolean;
+    lastSeenAt?: string;
+    meta?: { pluginVersion: string; editorType: "figma" | "figjam"; fileKey?: string; fileName?: string; pageName?: string; user?: { id?: string | null; name?: string } };
+  };
+  restOAuth?: { connected: boolean; userId?: string; message?: string };
 };
 
 export type FigmaExtractionOptions = {
@@ -97,6 +103,7 @@ export type FigmaExtractionOptions = {
   clientFrameworks: string;
   clientLanguages: string;
   codeConnectLabel?: string;
+  question?: string;
   mode: "live" | "demo";
 };
 
@@ -104,3 +111,14 @@ export type FigmaRunPayload = {
   manifest: Record<string, unknown>;
   events: ExtractionEvent[];
 };
+
+export type FigmaQuestionAnswer = {
+  answer: string;
+  evidence: Array<{ kind: "node" | "version" | "artifact" | "tool"; nodeId?: string; versionId?: string; artifactId?: string; tool?: string; detail?: string }>;
+  uncertainties: string[];
+  model: string;
+  promptVersion: string;
+  generatedAt: string;
+};
+
+export type PluginPairing = { code: string; expiresAt: string };

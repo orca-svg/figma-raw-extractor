@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { CodexAuthFlow, FigmaConnectionStatus, FigmaTransport } from "../types";
+import type { CodexAuthFlow, FigmaConnectionStatus, FigmaTransport, PluginPairing } from "../types";
 
 type Props = {
   statuses: Record<FigmaTransport, FigmaConnectionStatus>;
@@ -11,6 +11,9 @@ type Props = {
   onCodexLogin: () => Promise<CodexAuthFlow>;
   onCodexFigmaOAuth: () => Promise<CodexAuthFlow>;
   onCodexCancel: () => Promise<void>;
+  onPluginPair: () => Promise<PluginPairing>;
+  onRestOAuth: () => Promise<void>;
+  onRestDisconnect: () => Promise<void>;
   busy: boolean;
 };
 
@@ -25,8 +28,9 @@ function identityLabel(value: unknown): string | undefined {
   return undefined;
 }
 
-export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, busy }: Props) {
+export function FigmaConnectionPanel({ statuses, transport, onTransportChange, onRefresh, onOAuth, onDisconnect, onCodexLogin, onCodexFigmaOAuth, onCodexCancel, onPluginPair, onRestOAuth, onRestDisconnect, busy }: Props) {
   const [error, setError] = useState<string>();
+  const [pairing, setPairing] = useState<PluginPairing>();
   const status = statuses[transport];
   const handle = async (action: () => Promise<void>) => {
     setError(undefined);
@@ -45,6 +49,11 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
+  const createPairing = async () => {
+    setError(undefined);
+    try { setPairing(await onPluginPair()); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  };
 
   return (
     <section className="panel connection-panel figma-connection" aria-labelledby="figma-connection-title">
@@ -53,9 +62,9 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
         <div><p className="eyebrow">Connection</p><h2 id="figma-connection-title">Figma 연결</h2></div>
       </div>
       <div className="segmented-control" role="group" aria-label="Figma MCP 연결 방식">
-        {(["desktop", "remote", "codex"] as const).map((item) => (
+        {(["desktop", "remote", "codex", "plugin"] as const).map((item) => (
           <button key={item} type="button" className={transport === item ? "active" : ""} aria-pressed={transport === item} onClick={() => onTransportChange(item)}>
-            {item === "desktop" ? "Desktop" : item === "remote" ? "Remote β" : "Codex β"}
+            {item === "desktop" ? "Desktop" : item === "remote" ? "Remote β" : item === "codex" ? "Codex β" : "Plugin"}
           </button>
         ))}
       </div>
@@ -101,6 +110,43 @@ export function FigmaConnectionPanel({ statuses, transport, onTransportChange, o
           <p className="credential-note">비밀번호나 토큰은 이 화면에 입력하지 않습니다. 열린 Codex/Figma 공식 화면에서 인증하면 CLI가 안전하게 보관합니다.</p>
           {status.message ? <p className="connection-detail">{status.message}</p> : null}
           {status.codex?.version ? <code className="bridge-version">{status.codex.version}</code> : null}
+        </div>
+      ) : transport === "plugin" ? (
+        <div className="codex-connection-body plugin-connection-body">
+          <div className="bridge-disclosure plugin-disclosure">
+            <span>LOCAL PLUGIN BRIDGE</span>
+            <p>Figma 개발 플러그인이 현재 열린 Design·FigJam 파일의 노드와 이미지만 로컬 Trace Studio로 보냅니다.</p>
+          </div>
+          <div className="auth-rail plugin-rail" aria-label="Figma Plugin 연결 상태">
+            <div className={status.plugin?.connected ? "ready" : "waiting"}>
+              <span>01</span><p><strong>Plugin</strong><small>{status.plugin?.connected ? "페어링됨" : "6자리 코드 필요"}</small></p><i aria-hidden="true" />
+            </div>
+            <div className={status.restOAuth?.connected ? "ready" : "waiting"}>
+              <span>02</span><p><strong>버전 이력</strong><small>{status.restOAuth?.connected ? "REST OAuth 연결됨" : "선택 연결"}</small></p><i aria-hidden="true" />
+            </div>
+          </div>
+          {status.plugin?.connected ? (
+            <div className="connected-card plugin-ready-card">
+              <div className="connected-line"><span className="status-dot success" /><strong>Figma Plugin 준비됨</strong></div>
+              <p>{status.plugin.meta?.user?.name ?? "현재 사용자"} · {status.plugin.meta?.editorType === "figjam" ? "FigJam" : "Figma Design"} · {status.plugin.meta?.pageName ?? "현재 페이지"}</p>
+              {status.plugin.meta?.fileKey ? <code>{status.plugin.meta.fileKey}</code> : null}
+            </div>
+          ) : pairing ? (
+            <div className="plugin-pair-code" role="status">
+              <span>Figma 플러그인에 입력</span>
+              <button type="button" onClick={() => void navigator.clipboard.writeText(pairing.code)} title="페어링 코드 복사">{pairing.code}</button>
+              <p>{new Date(pairing.expiresAt).toLocaleTimeString()}까지 유효합니다. 플러그인을 열어 둔 채 입력하세요.</p>
+            </div>
+          ) : (
+            <button className="primary-button full figma-primary" type="button" onClick={() => void createPairing()} disabled={busy}>6자리 페어링 코드 만들기</button>
+          )}
+          <div className="plugin-rest-actions">
+            {status.restOAuth?.connected ? <button className="secondary-button full" type="button" onClick={() => void handle(async () => { await onRestDisconnect(); await onRefresh("plugin"); })} disabled={busy}>버전 이력 연결 해제</button>
+              : <button className="secondary-button full" type="button" onClick={() => void handle(onRestOAuth)} disabled={busy}>Figma 버전 이력 OAuth 연결</button>}
+            <button className="text-button" type="button" onClick={() => void handle(() => onRefresh("plugin"))} disabled={busy}>연결 상태 다시 확인</button>
+          </div>
+          <p className="credential-note">OAuth 브로커는 토큰 교환만 처리하며 파일·노드·이미지는 로컬에서 Figma API와 직접 주고받습니다.</p>
+          {status.message ? <p className="connection-detail">{status.message}</p> : null}
         </div>
       ) : status.connected ? (
         <div className="connected-card figma-card">
