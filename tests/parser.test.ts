@@ -9,6 +9,7 @@ import {
   parseToolResult,
   resolveTool,
 } from "../server/extract.js";
+import { parseNotionTarget } from "../server/notion-target.js";
 
 describe("Notion MCP 응답 파서", () => {
   it("Enhanced Markdown에서 데이터 소스, 뷰, 댓글, 첨부를 분리한다", () => {
@@ -48,5 +49,42 @@ describe("Notion MCP 응답 파서", () => {
     expect(extractIdentity(result.payload).workspace?.name).toBe("Example Workspace");
     expect(resolveTool([{ name: "fetch" }, { name: "notion-query-data-sources" }], "query_data_sources")).toBe("notion-query-data-sources");
     expect(resolveTool([{ name: "figma_get_design_context" }], "get_design_context")).toBe("figma_get_design_context");
+  });
+});
+
+describe("Notion 타겟 파서", () => {
+  it("워크스페이스와 제목이 붙은 링크에서 페이지 ID를 뽑는다", () => {
+    expect(parseNotionTarget("https://www.notion.so/acme/Team-Home-f336d0bcb841465b8045024475c079dd")).toMatchObject({
+      kind: "page",
+      pageId: "f336d0bc-b841-465b-8045-024475c079dd",
+    });
+  });
+
+  it("?v= 가 붙으면 데이터베이스 뷰로 본다", () => {
+    expect(parseNotionTarget("https://www.notion.so/11111111111141118111111111111111?v=22222222222242228222222222222222")).toMatchObject({
+      kind: "database",
+      pageId: "11111111-1111-4111-8111-111111111111",
+      viewId: "22222222-2222-4222-8222-222222222222",
+    });
+  });
+
+  it("ID만 붙여넣으면 표준 URL로 편다", () => {
+    expect(parseNotionTarget("11111111-1111-4111-8111-111111111111")).toMatchObject({
+      kind: "page",
+      pageId: "11111111-1111-4111-8111-111111111111",
+      sourceUrl: "https://www.notion.so/11111111111141118111111111111111",
+    });
+  });
+
+  it("notion.site 공개 링크도 받는다", () => {
+    expect(parseNotionTarget("https://acme.notion.site/Docs-f336d0bcb841465b8045024475c079dd")).toMatchObject({
+      pageId: "f336d0bc-b841-465b-8045-024475c079dd",
+    });
+  });
+
+  it("다른 호스트와 ID 없는 링크는 거부한다", () => {
+    expect(() => parseNotionTarget("https://example.com/f336d0bcb841465b8045024475c079dd")).toThrow(/notion/);
+    expect(() => parseNotionTarget("https://www.notion.so/acme/Team-Home")).toThrow(/페이지 ID/);
+    expect(() => parseNotionTarget("   ")).toThrow(/입력/);
   });
 });
