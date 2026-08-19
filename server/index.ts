@@ -5,6 +5,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { fileURLToPath } from "node:url";
 import { DemoMcpAdapter } from "./demo-adapter.js";
 import { runExtraction, extractIdentity, parseToolResult, resolveTool } from "./extract.js";
+import { parseNotionTarget } from "./notion-target.js";
 import { FigmaDemoAdapter, FIGMA_DEMO_TARGET } from "./figma-demo-adapter.js";
 import { runFigmaExtraction } from "./figma-extract.js";
 import { runPluginFigmaExtraction } from "./figma-plugin-extract.js";
@@ -306,6 +307,12 @@ const notionExtract = async (req: Request, res: Response) => {
     mode: body.mode === "demo" ? "demo" : "live",
   };
   if (!input.target) return res.status(400).json({ message: "Notion URL 또는 ID를 입력해 주세요." });
+  try {
+    // 잘못된 링크는 MCP 호출까지 가기 전에 끊고, ID만 붙여넣은 경우는 표준 URL로 편다.
+    input.target = parseNotionTarget(input.target).sourceUrl;
+  } catch (error) {
+    return res.status(400).json({ message: (error as Error).message });
+  }
   if (input.mode === "live" && !session.tokens) return res.status(401).json({ message: "Notion 계정을 먼저 연결해 주세요." });
   res.status(200);
   res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");

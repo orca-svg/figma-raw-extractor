@@ -30,6 +30,15 @@ export type NotionExtractionInput = {
 /** Kept as an alias for the existing Notion pipeline and its tests. */
 export type ExtractionInput = NotionExtractionInput;
 
+export type NotionTargetKind = "page" | "database";
+
+export type NotionTarget = {
+  kind: NotionTargetKind;
+  pageId: string;
+  viewId?: string;
+  sourceUrl: string;
+};
+
 export type FigmaTransport = "desktop" | "remote" | "codex" | "plugin";
 export type FigmaFileType = "design" | "figjam";
 export type FigmaTargetMode = "link" | "selection";
